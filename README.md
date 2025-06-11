@@ -47,9 +47,6 @@ Add the following to the [dependencies] section of your `Cargo.toml`:
 ```toml
 [dependencies]
 di = { git = "https://github.com/bordunosp/rust_di.git", tag = "v0.1.0" }
-tokio = { version = "1", features = ["full"] } # Required for async runtime
-arc-swap = "1.0"
-dashmap = "5.0"
 ```
 
 ---
