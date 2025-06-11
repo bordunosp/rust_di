@@ -1,8 +1,7 @@
 # Dependency Injection Library for Async Rust
 
 This is a lightweight, thread-safe dependency injection (DI) library designed for asynchronous Rust applications. It
-provides three fundamental lifetime management strategies for your services: **singleton**, **scoped**, and **transient
-**.
+provides three fundamental lifetime management strategies for your services: **singleton**, **scoped**, and **transient**.
 
 ---
 
