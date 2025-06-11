@@ -1,0 +1,9 @@
+[package]
+name = "di"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.45.1", features = ["full"] }
+arc-swap = "1.7.1"
+dashmap = "7.0.0-rc2"

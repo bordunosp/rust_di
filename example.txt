@@ -1,0 +1,259 @@
+
+// --- Прикладні структури для main функції ---
+
+// pub struct DatabaseConnection {
+//     _id: usize,
+// }
+//
+// impl DatabaseConnection {
+//     pub fn new() -> Self {
+//         DatabaseConnection {
+//             _id: GLOBAL_SERVICE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+//         }
+//     }
+// }
+//
+// pub struct UserRepository {
+//     _db: Arc<TokioRwLock<DatabaseConnection>>,
+// }
+//
+// impl UserRepository {
+//     pub async fn new(db: Arc<TokioRwLock<DatabaseConnection>>) -> Self {
+//         UserRepository { _db: db }
+//     }
+// }
+//
+// pub struct UserService {
+//     _user_repository: Arc<TokioRwLock<UserRepository>>,
+// }
+//
+// impl UserService {
+//     pub async fn new(user_repository: Arc<TokioRwLock<UserRepository>>) -> Self {
+//         UserService { _user_repository: user_repository }
+//     }
+// }
+
+// #[derive(Debug)]
+// pub struct LazyServiceAMain {
+//     _b_lazy: OnceCell<Arc<TokioRwLock<LazyServiceBMain>>>,
+//     _scope: Arc<DIScope>,
+// }
+//
+// impl LazyServiceAMain {
+//     async fn new(scope: Arc<DIScope>) -> Result<Self, DiError> {
+//         Ok(LazyServiceAMain {
+//             _b_lazy: OnceCell::new(),
+//             _scope: scope,
+//         })
+//     }
+//
+//     pub async fn get_b(&self) -> Result<Arc<TokioRwLock<LazyServiceBMain>>, DiError> {
+//         let service_ref = self._b_lazy.get_or_try_init(|| async {
+//             self._scope.clone().get::<LazyServiceBMain>().await
+//         }).await?;
+//
+//         Ok(service_ref.clone())
+//     }
+// }
+
+// #[derive(Debug)]
+// pub struct LazyServiceBMain {
+//     _a_lazy: OnceCell<Arc<TokioRwLock<LazyServiceAMain>>>,
+//     _scope: Arc<DIScope>,
+// }
+//
+// impl LazyServiceBMain {
+//     async fn new(scope: Arc<DIScope>) -> Result<Self, DiError> {
+//         Ok(LazyServiceBMain {
+//             _a_lazy: OnceCell::new(),
+//             _scope: scope,
+//         })
+//     }
+//
+//     pub async fn get_a(&self) -> Result<Arc<TokioRwLock<LazyServiceAMain>>, DiError> {
+//         let service_ref = self._a_lazy.get_or_try_init(|| async {
+//             self._scope.clone().get::<LazyServiceAMain>().await
+//         }).await?;
+//
+//         Ok(service_ref.clone())
+//     }
+// }
+
+// #[derive(Debug)]
+// pub struct MyCustomServiceError {
+//     message: String,
+//     code: u16,
+// }
+//
+// impl MyCustomServiceError {
+//     fn new(code: u16, message: &str) -> Self {
+//         MyCustomServiceError {
+//             code,
+//             message: message.to_string(),
+//         }
+//     }
+// }
+//
+// impl fmt::Display for MyCustomServiceError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "Service Error [{}]: {}", self.code, self.message)
+//     }
+// }
+//
+// impl Error for MyCustomServiceError {}
+
+// #[derive(Debug)]
+// struct MyServiceWithCustomError {
+//     _data: String,
+// }
+
+// impl MyServiceWithCustomError {
+//     async fn new(should_fail: bool) -> Result<Self, MyCustomServiceError> {
+//         if should_fail {
+//             Err(MyCustomServiceError::new(500, "Failed to connect to external resource"))
+//         } else {
+//             Ok(MyServiceWithCustomError { _data: "Initialized successfully".to_string() })
+//         }
+//     }
+// }
+
+// static FALLIBLE_SERVICE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+// --- Main функція ---
+
+// #[tokio::main]
+// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//     println!("--- Налаштування стандартних сервісів ---");
+//     register_scope(|_| async { Ok(DatabaseConnection::new()) }).await?;
+//
+//     register_transient(|scope| async move {
+//         let db = scope.clone().get::<DatabaseConnection>().await?;
+//         Ok(UserRepository::new(db).await)
+//     })
+//         .await?;
+//
+//     register_transient(|scope| async move {
+//         let user_repo = scope.clone().get::<UserRepository>().await?;
+//         Ok(UserService::new(user_repo).await)
+//     })
+//         .await?;
+//
+//     let result_message = DIScope::run_with_scope(|| async {
+//         let resolver = DIScope::current()?;
+//         let user_service = resolver.clone().get::<UserService>().await?;
+//         println!("UserService created!");
+//
+//         let db_id = user_service.read().await
+//             ._user_repository.read().await
+//             ._db.read().await
+//             ._id;
+//
+//         Ok::<String, DiError>(format!("UserService created successfully with DB ID: {}", db_id))
+//     })
+//         .await?;
+//
+//     println!("Результат виконання: {}", result_message);
+//
+//     println!("\n--- Демонстрація іменованих синглтонів ---");
+//
+//     #[derive(Debug)]
+//     struct ConfigService {
+//         connection_string: String,
+//     }
+//     impl ConfigService {
+//         fn new(conn_str: String) -> Self { ConfigService { connection_string: conn_str } }
+//     }
+//
+//     register_singleton_name("primary_db_config", ConfigService::new("mongodb://localhost:27017".to_string())).await?;
+//     register_singleton_name("secondary_db_config", ConfigService::new("postgres://user:pass@host:5432/db".to_string())).await?;
+//
+//     DIScope::run_with_scope(|| async {
+//         let resolver = DIScope::current()?;
+//         let primary_config = resolver.clone().by_name::<ConfigService>("primary_db_config").await?;
+//         let secondary_config = resolver.clone().by_name::<ConfigService>("secondary_db_config").await?;
+//
+//         println!("Primary DB Config: {}", primary_config.read().await.connection_string);
+//         println!("Secondary DB Config: {}", secondary_config.read().await.connection_string);
+//
+//         let default_config_result = resolver.clone().get::<ConfigService>().await;
+//         if let Err(DiError::ServiceNotFound(_, name)) = default_config_result {
+//             println!("Default ConfigService not found as expected (name: '{}')", name);
+//         } else {
+//             println!("Unexpected result for default ConfigService: {:?}", default_config_result);
+//         }
+//
+//         Ok::<(), DiError>(())
+//     }).await?;
+//
+//     println!("\n--- Демонстрація лінивої циклічної залежності ---");
+//
+//     register_transient(|scope| async move { LazyServiceAMain::new(scope).await }).await?;
+//     register_transient(|scope| async move { LazyServiceBMain::new(scope).await }).await?;
+//
+//     DIScope::run_with_scope(|| async {
+//         let resolver = DIScope::current()?;
+//
+//         println!("Trying to resolve LazyServiceAMain...");
+//         let svc_a = resolver.clone().get::<LazyServiceAMain>().await?;
+//
+//         println!("LazyServiceAMain resolved. Now trying to access LazyServiceBMain from LazyServiceAMain...");
+//         let svc_b_from_a = svc_a.read().await.get_b().await?;
+//
+//         println!("LazyServiceBMain from LazyServiceAMain resolved. Now trying to access LazyServiceAMain from LazyServiceBMain...");
+//         let _svc_a_from_b = svc_b_from_a.read().await.get_a().await?;
+//
+//         println!("Successfully resolved lazy circular dependencies by breaking the immediate cycle.");
+//         Ok::<(), DiError>(())
+//     }).await?;
+//
+//     println!("\n--- Демонстрація обробки помилок фабрики ---");
+//     FALLIBLE_SERVICE_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+//
+//     register_transient(|_scope| async move {
+//         let current_count = FALLIBLE_SERVICE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+//         let should_fail = current_count % 2 == 0;
+//         println!("Attempting to create MyServiceWithCustomError (count: {})...", current_count + 1);
+//         MyServiceWithCustomError::new(should_fail).await
+//             .map_err(|e| DiError::FactoryError(Box::new(e)))
+//     })
+//         .await?;
+//
+//     DIScope::run_with_scope(|| async {
+//         let resolver = DIScope::current()?;
+//
+//         println!("Спроба 1: Отримання MyServiceWithCustomError...");
+//         let result1 = resolver.clone().get::<MyServiceWithCustomError>().await;
+//         match result1 {
+//             Err(DiError::FactoryError(e)) => {
+//                 println!("Спроба 1 успішно завершилася з помилкою: {}", e);
+//                 assert!(e.to_string().contains("Failed to connect to external resource"));
+//             },
+//             _ => panic!("Очікували FactoryError на першій спробі, отримали: {:?}", result1),
+//         }
+//
+//         println!("\nСпроба 2: Отримання MyServiceWithCustomError...");
+//         let result2 = resolver.clone().get::<MyServiceWithCustomError>().await;
+//         match result2 {
+//             Ok(service) => {
+//                 println!("Спроба 2 успішна. Дані сервісу: {:?}", service.read().await._data);
+//                 assert!(service.read().await._data.contains("Initialized successfully"));
+//             },
+//             _ => panic!("Очікували успіх на другій спробі, отримали: {:?}", result2),
+//         }
+//
+//         println!("\nСпроба 3: Отримання MyServiceWithCustomError...");
+//         let result3 = resolver.clone().get::<MyServiceWithCustomError>().await;
+//         match result3 {
+//             Err(DiError::FactoryError(e)) => {
+//                 println!("Спроба 3 успішно завершилася з помилкою: {}", e);
+//                 assert!(e.to_string().contains("Failed to connect to external resource"));
+//             },
+//             _ => panic!("Очікували FactoryError на третій спробі, отримали: {:?}", result3),
+//         }
+//
+//         Ok::<(), DiError>(())
+//     })
+//         .await?;
+//
+//     Ok(())
+// }
