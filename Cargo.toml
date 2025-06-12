@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",
+    "macros/with_di_scope",
+]
+
 [package]
 name = "di"
 version = "0.1.0"
@@ -7,3 +13,12 @@ edition = "2024"
 tokio = { version = "1.45.1", features = ["full"] }
 arc-swap = "1.7.1"
 dashmap = "7.0.0-rc2"
+with_di_scope = { path = "./macros/with_di_scope" }
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+
+
