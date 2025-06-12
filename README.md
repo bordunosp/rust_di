@@ -45,7 +45,7 @@ Add the following to the [dependencies] section of your `Cargo.toml`:
 
 ```toml
 [dependencies]
-di = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.0" }
+di = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.1" }
 ```
 
 ---
