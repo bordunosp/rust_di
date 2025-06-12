@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn};
+use syn::{ItemFn, parse_macro_input};
 
 #[proc_macro_attribute]
 pub fn with_di_scope(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -19,8 +19,8 @@ pub fn with_di_scope(_attr: TokenStream, item: TokenStream) -> TokenStream {
             input_fn.sig.fn_token,
             "The 'with_di_scope' macro can only be applied to async functions.",
         )
-            .to_compile_error()
-            .into();
+        .to_compile_error()
+        .into();
     }
 
     let expanded = quote! {

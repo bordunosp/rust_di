@@ -1,0 +1,5 @@
+error: The 'with_di_scope' macro can only be applied to async functions.
+ --> tests/ui/non_async_fn.rs
+  |
+  | fn sync_function() {
+  | ^^

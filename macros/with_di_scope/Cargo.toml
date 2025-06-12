@@ -7,6 +7,12 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0.95"
+#proc-macro2 = "1.0.95"
 quote = "1.0.40"
 syn = { version = "2.0.102", features = ["full", "extra-traits"] }
+
+[dev-dependencies]
+trybuild = "1.0.105"
+tokio = { version = "1", features = ["full"] }
+dashmap = "7.0.0-rc2"
+di = { path = "../../", features = ["test_utils"] }

@@ -1,5 +1,5 @@
 use arc_swap::ArcSwap;
-use dashmap::DashMap; // Використовуємо DashMap
+use dashmap::DashMap;
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
@@ -11,41 +11,29 @@ use std::{
 };
 use tokio::sync::{OnceCell, RwLock as TokioRwLock};
 
-// --- Типи та статичні реєстри ---
+pub trait AnyService: Any + Send + Sync + 'static {}
+impl<T: Any + Send + Sync + 'static> AnyService for T {}
 
-type RegisteredInstances = OnceCell<
-    ArcSwap<
-        DashMap<
-            (TypeId, String),
-            Arc<
-                dyn Fn(
-                    Arc<DIScope>,
-                ) -> Pin<
-                    Box<
-                        dyn Future<
-                            Output = Result<
-                                Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>,
-                                DiError,
-                            >,
-                        > + Send,
-                    >,
-                > + Send
-                + Sync,
-            >,
-        >,
-    >,
+type ServiceInstance = Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>;
+type ServiceKey = (TypeId, String);
+type SingletonMap = DashMap<ServiceKey, ServiceInstance>;
+
+type ServiceFactory = Arc<
+    dyn Fn(Arc<DIScope>) -> Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
+        + Send
+        + Sync
+        + 'static,
 >;
+type FactoryMap = DashMap<ServiceKey, ServiceFactory>;
 
-static REGISTERED_SINGLETON_INSTANCES: OnceCell<
-    ArcSwap<DashMap<(TypeId, String), Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>>>, // Замінено HashMap на DashMap
-> = OnceCell::const_new();
+type RegisteredInstances = OnceCell<ArcSwap<FactoryMap>>;
+
+static REGISTERED_SINGLETON_INSTANCES: OnceCell<ArcSwap<SingletonMap>> = OnceCell::const_new();
 static REGISTERED_TRANSIENT_FACTORIES: RegisteredInstances = OnceCell::const_new();
 static REGISTERED_SCOPE_FACTORIES: RegisteredInstances = OnceCell::const_new();
 
 pub static GLOBAL_SERVICE_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-
-// --- DiError та його імплементації ---
 
 #[derive(Debug)]
 pub enum DiError {
@@ -60,26 +48,33 @@ impl fmt::Display for DiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DiError::ServiceNotFound(type_id, name) => {
-                write!(f, "Service not found for TypeId: {:?} with name: {}", type_id, name)
+                write!(
+                    f,
+                    "Service not found for TypeId: {:?} with name: {}",
+                    type_id, name
+                )
             }
             DiError::ServiceAlreadyRegistered(type_id, name) => {
-                write!(f, "Service already registered for TypeId: {:?} with name: {}", type_id, name)
+                write!(
+                    f,
+                    "Service already registered for TypeId: {:?} with name: {}",
+                    type_id, name
+                )
             }
             DiError::LockPoisoned => write!(f, "A Mutex or RwLock was poisoned"),
             DiError::FactoryError(err) => write!(f, "Service factory error: {}", err),
             DiError::CircularDependency(type_id, name) => {
-                write!(f, "Circular dependency detected for TypeId: {:?} with name: {}", type_id, name)
+                write!(
+                    f,
+                    "Circular dependency detected for TypeId: {:?} with name: {}",
+                    type_id, name
+                )
             }
         }
     }
 }
 
 impl Error for DiError {}
-
-pub trait AnyService: Any + Send + Sync + 'static {}
-impl<T: Any + Send + Sync + 'static> AnyService for T {}
-
-// --- Допоміжні функції для реєстрації (усунення дублювання) ---
 
 async fn register_factory<T, F, Fut>(
     name: &str,
@@ -94,7 +89,7 @@ where
     let type_id = TypeId::of::<T>();
     let name_string = name.to_string();
     let factories_arcswap = registry
-        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) }) // Ініціалізація DashMap
+        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
         .await;
 
     let key = (type_id, name_string.clone());
@@ -107,18 +102,8 @@ where
         let factory_cloned = factory.clone();
         Box::pin(async move {
             let service = factory_cloned(scope).await?;
-            Ok(Arc::new(TokioRwLock::new(service))
-                as Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>)
-        }) as Pin<
-            Box<
-                dyn Future<
-                    Output = Result<
-                        Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>,
-                        DiError,
-                    >,
-                > + Send,
-            >,
-        >
+            Ok(Arc::new(TokioRwLock::new(service)) as ServiceInstance)
+        }) as Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
     });
 
     let current_map = factories_arcswap.load();
@@ -126,14 +111,12 @@ where
     for entry in current_map.iter() {
         new_map.insert(entry.key().clone(), entry.value().clone());
     }
-    
+
     new_map.insert(key, wrapped_factory);
     factories_arcswap.store(Arc::new(new_map));
 
     Ok(())
 }
-
-// --- Публічні функції реєстрації ---
 
 pub async fn register_transient<T, F, Fut>(factory: F) -> Result<(), DiError>
 where
@@ -185,7 +168,7 @@ where
     let type_id = TypeId::of::<T>();
     let name_string = name.to_string();
     let instances_arcswap = REGISTERED_SINGLETON_INSTANCES
-        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) }) // Ініціалізація DashMap
+        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
         .await;
 
     let key = (type_id, name_string.clone());
@@ -199,12 +182,8 @@ where
     for entry in current_map.iter() {
         new_map.insert(entry.key().clone(), entry.value().clone());
     }
-    new_map.insert(
-        key,
-        Arc::new(TokioRwLock::new(instance))
-            as Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>,
-    );
-    
+    new_map.insert(key, Arc::new(TokioRwLock::new(instance)) as ServiceInstance);
+
     instances_arcswap.store(Arc::new(new_map));
     Ok(())
 }
@@ -214,55 +193,11 @@ tokio::task_local! {
     static RESOLVING_STACK: RefCell<Vec<TypeId>>;
 }
 
-// --- DIScope та його імплементації ---
-
 pub struct DIScope {
-    singleton_instances: &'static ArcSwap<
-        DashMap<(TypeId, String), Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>>, // Замінено HashMap на DashMap
-    >,
-    transient_factories: &'static ArcSwap<
-        DashMap<
-            (TypeId, String),
-            Arc<
-                dyn Fn(
-                    Arc<DIScope>,
-                ) -> Pin<
-                    Box<
-                        dyn Future<
-                            Output = Result<
-                                Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>,
-                                DiError,
-                            >,
-                        > + Send,
-                    >,
-                > + Send
-                + Sync,
-            >,
-        >,
-    >,
-
-    scope_factories: &'static ArcSwap<
-        DashMap<
-            (TypeId, String),
-            Arc<
-                dyn Fn(
-                    Arc<DIScope>,
-                ) -> Pin<
-                    Box<
-                        dyn Future<
-                            Output = Result<
-                                Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>,
-                                DiError,
-                            >,
-                        > + Send,
-                    >,
-                > + Send
-                + Sync,
-            >,
-        >,
-    >,
-    pub scoped_instances:
-        Arc<DashMap<(TypeId, String), Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>>>,
+    singleton_instances: &'static ArcSwap<SingletonMap>,
+    transient_factories: &'static ArcSwap<FactoryMap>,
+    scope_factories: &'static ArcSwap<FactoryMap>,
+    pub scoped_instances: Arc<SingletonMap>,
 }
 
 impl fmt::Debug for DIScope {
@@ -298,7 +233,12 @@ impl DIScope {
     pub fn current() -> Result<Arc<DIScope>, DiError> {
         CURRENT_DI_SCOPE
             .try_with(|scope| scope.clone())
-            .map_err(|e| DiError::FactoryError(Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("No DI scope found in this task: {}", e)))))
+            .map_err(|e| {
+                DiError::FactoryError(Box::new(std::io::Error::other(format!(
+                    "No DI scope found in this task: {}",
+                    e
+                ))))
+            })
     }
 
     pub async fn run_with_scope<F, RFut, ROutput>(func: F) -> ROutput
@@ -339,50 +279,47 @@ impl DIScope {
                 Ok::<(), DiError>(())
             })
             .map_err(|e| {
-                DiError::FactoryError(Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to access resolving stack (AccessError): {}", e))))
+                DiError::FactoryError(Box::new(std::io::Error::other(format!(
+                    "Failed to access resolving stack (AccessError): {}",
+                    e
+                ))))
             })?;
 
-        let result: Result<Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>, DiError> =
-            async {
-                // Try singletons
-                {
-                    let singletons_guard = self.singleton_instances.load();
-                    if let Some(instance) = singletons_guard.get(&key) {
-                        return Ok(instance.value().clone());
-                    }
+        let result: Result<ServiceInstance, DiError> = async {
+            {
+                let singletons_guard = self.singleton_instances.load();
+                if let Some(instance) = singletons_guard.get(&key) {
+                    return Ok(instance.value().clone());
                 }
-
-                // Try scoped instances
-                {
-                    if let Some(entry) = self.scoped_instances.get(&(type_id, name_string.clone()))
-                    {
-                        return Ok(entry.value().clone());
-                    }
-                }
-
-                // Try scope factories
-                {
-                    let factories_guard = self.scope_factories.load();
-                    if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
-                        let instance = factory.value()(self.clone()).await?;
-                        self.scoped_instances
-                            .insert((type_id, name_string.clone()), instance.clone());
-                        return Ok(instance.clone());
-                    }
-                }
-
-                // Try transient factories
-                {
-                    let factories_guard = self.transient_factories.load();
-                    if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
-                        let instance = factory.value()(self.clone()).await?;
-                        return Ok(instance.clone());
-                    }
-                }
-
-                Err(DiError::ServiceNotFound(type_id, name_string.clone()))
             }
-                .await;
+
+            {
+                if let Some(entry) = self.scoped_instances.get(&(type_id, name_string.clone())) {
+                    return Ok(entry.value().clone());
+                }
+            }
+
+            {
+                let factories_guard = self.scope_factories.load();
+                if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
+                    let instance = factory.value()(self.clone()).await?;
+                    self.scoped_instances
+                        .insert((type_id, name_string.clone()), instance.clone());
+                    return Ok(instance.clone());
+                }
+            }
+
+            {
+                let factories_guard = self.transient_factories.load();
+                if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
+                    let instance = factory.value()(self.clone()).await?;
+                    return Ok(instance.clone());
+                }
+            }
+
+            Err(DiError::ServiceNotFound(type_id, name_string.clone()))
+        }
+        .await;
 
         let _ = RESOLVING_STACK
             .try_with(|stack| {
@@ -390,7 +327,10 @@ impl DIScope {
                 Ok::<(), DiError>(())
             })
             .map_err(|e| {
-                DiError::FactoryError(Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to access resolving stack (AccessError): {}", e))))
+                DiError::FactoryError(Box::new(std::io::Error::other(format!(
+                    "Failed to access resolving stack (AccessError): {}",
+                    e
+                ))))
             })?;
 
         result.map(|instance| {
@@ -407,28 +347,14 @@ impl DIScope {
     }
 }
 
-// --- Тести ---
+#[cfg(feature = "test_utils")]
+pub mod test_utils;
+
 #[cfg(test)]
 mod tests {
+    use super::test_utils::TEST_SERVICE_COUNTER;
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    pub async fn reset_global_di_state() -> Result<(), DiError> {
-        if let Some(registry) = REGISTERED_SINGLETON_INSTANCES.get() {
-            registry.store(Arc::new(DashMap::new()));
-        }
-        if let Some(registry) = REGISTERED_TRANSIENT_FACTORIES.get() {
-            registry.store(Arc::new(DashMap::new()));
-        }
-        if let Some(registry) = REGISTERED_SCOPE_FACTORIES.get() {
-            registry.store(Arc::new(DashMap::new()));
-        }
-        GLOBAL_SERVICE_COUNTER.store(0, Ordering::SeqCst);
-        COUNTER.store(0, Ordering::SeqCst);
-        Ok(())
-    }
+    use std::sync::atomic::Ordering;
 
     #[derive(Debug)]
     struct TestServiceA {
@@ -437,7 +363,7 @@ mod tests {
     impl TestServiceA {
         fn new() -> Self {
             TestServiceA {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -449,7 +375,7 @@ mod tests {
     impl TestServiceB {
         fn new() -> Self {
             TestServiceB {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -461,7 +387,7 @@ mod tests {
     impl TestServiceC {
         fn new() -> Self {
             TestServiceC {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -473,7 +399,7 @@ mod tests {
     impl TestServiceD {
         fn new() -> Self {
             TestServiceD {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -485,7 +411,7 @@ mod tests {
     impl TestServiceE {
         fn new() -> Self {
             TestServiceE {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -497,7 +423,7 @@ mod tests {
     impl MixedServiceA {
         fn new() -> Self {
             MixedServiceA {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -508,7 +434,7 @@ mod tests {
     impl MixedServiceB {
         fn new() -> Self {
             MixedServiceB {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -519,7 +445,7 @@ mod tests {
     impl MixedServiceC {
         fn new() -> Self {
             MixedServiceC {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
             }
         }
     }
@@ -544,7 +470,7 @@ mod tests {
     impl NamedSingletonService {
         fn new(name: &str) -> Self {
             NamedSingletonService {
-                id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
                 name: name.to_string(),
             }
         }
@@ -552,7 +478,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_transient_service() {
-        reset_global_di_state().await.unwrap();
+        test_utils::reset_global_di_state_for_tests().await.unwrap();
 
         register_transient(|_| async move { Ok(TestServiceA::new()) })
             .await
@@ -565,16 +491,16 @@ mod tests {
             let service2 = resolver.clone().get::<TestServiceA>().await.unwrap();
 
             assert_ne!(service1.read().await.id, service2.read().await.id);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
-            Ok::<(), DiError>(())
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_scoped_service() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_scope(|_| async move { Ok(TestServiceB::new()) })
             .await
@@ -587,30 +513,30 @@ mod tests {
             let service2 = resolver.clone().get::<TestServiceB>().await.unwrap();
 
             assert_eq!(service1.read().await.id, service2.read().await.id);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
 
             register_scope_name(
                 "named_scoped_service",
                 Arc::new(|_| async move { Ok(TestServiceC::new()) }),
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
             let named_service = resolver
                 .clone()
                 .by_name::<TestServiceC>("named_scoped_service")
                 .await
                 .unwrap();
             assert_eq!(named_service.read().await.id, 1);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
-            Ok::<(), DiError>(())
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_scoped_service_different_scopes() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_scope(|_| async move { Ok(TestServiceD::new()) })
             .await
@@ -619,31 +545,31 @@ mod tests {
         let service_id_scope1 = DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
             let service = resolver.get::<TestServiceD>().await.unwrap();
-            Ok::<usize, DiError>(service.read().await.id)
+            service.read().await.id
         })
-            .await
-            .unwrap();
+        .await;
 
         let service_id_scope2 = DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
             let service = resolver.get::<TestServiceD>().await.unwrap();
-            Ok::<usize, DiError>(service.read().await.id)
+            service.read().await.id
         })
-            .await
-            .unwrap();
+        .await;
 
         assert_ne!(service_id_scope1, service_id_scope2);
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_singleton_service() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_singleton(TestServiceE::new()).await.unwrap();
         let service_id_at_registration = 0;
 
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
 
         DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
@@ -652,26 +578,26 @@ mod tests {
 
             assert_eq!(service1.read().await.id, service2.read().await.id);
             assert_eq!(service1.read().await.id, service_id_at_registration);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
-            Ok::<(), DiError>(())
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_multiple_named_singletons_of_same_type() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_singleton_name("db_conn_1", NamedSingletonService::new("db_conn_1"))
             .await
             .unwrap();
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
 
         register_singleton_name("db_conn_2", NamedSingletonService::new("db_conn_2"))
             .await
             .unwrap();
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
 
         DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
@@ -700,17 +626,16 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(service1.read().await.id, service1_again.read().await.id);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
-
-            Ok::<(), DiError>(())
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_unnamed_and_named_singleton_coexistence() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         #[derive(Debug)]
         struct CoexistService {
@@ -719,18 +644,18 @@ mod tests {
         impl CoexistService {
             fn new() -> Self {
                 CoexistService {
-                    id: COUNTER.fetch_add(1, Ordering::SeqCst),
+                    id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
                 }
             }
         }
 
         register_singleton(CoexistService::new()).await.unwrap();
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
 
         register_singleton_name("special_coexist", CoexistService::new())
             .await
             .unwrap();
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
+        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
 
         DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
@@ -749,15 +674,15 @@ mod tests {
                 default_service.read().await.id,
                 named_service.read().await.id
             );
-            Ok::<(), DiError>(())
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_mixed_lifetimes() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_singleton(MixedServiceA::new()).await.unwrap();
 
@@ -765,15 +690,15 @@ mod tests {
             "transient_b",
             Arc::new(|_| async move { Ok(MixedServiceB::new()) }),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         register_scope_name(
             "scoped_c",
             Arc::new(|_| async move { Ok(MixedServiceC::new()) }),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
@@ -782,7 +707,7 @@ mod tests {
             let s_singleton2 = resolver.clone().get::<MixedServiceA>().await.unwrap();
             assert_eq!(s_singleton1.read().await.id, s_singleton2.read().await.id);
             assert_eq!(s_singleton1.read().await.id, 0);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
 
             let t_b1 = resolver
                 .clone()
@@ -795,7 +720,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_ne!(t_b1.read().await.id, t_b2.read().await.id);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 3);
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 3);
 
             let sc_c1 = resolver
                 .clone()
@@ -808,42 +733,40 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(sc_c1.read().await.id, sc_c2.read().await.id);
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 4);
-            Ok::<(), DiError>(())
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 4);
         })
-            .await
-            .unwrap();
+        .await;
 
         DIScope::run_with_scope(|| async {
             let resolver = DIScope::current().unwrap();
 
             let sc_c_new_scope = resolver.by_name::<MixedServiceC>("scoped_c").await.unwrap();
-            assert_eq!(COUNTER.load(Ordering::SeqCst), 5);
+            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 5);
             assert_ne!(sc_c_new_scope.read().await.id, 3);
             assert_eq!(sc_c_new_scope.read().await.id, 4);
-            Ok::<(), DiError>(())
         })
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_service_not_found() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         let result = DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current()?;
-            let result: Result<Arc<TokioRwLock<MissingService>>, DiError> =
-                resolver.get::<MissingService>().await;
-            result
+            let resolver = DIScope::current().unwrap();
+            resolver.get::<MissingService>().await
         })
-            .await;
+        .await;
         assert!(matches!(result, Err(DiError::ServiceNotFound(_, _))));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_service_already_registered() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_transient(|_| async move { Ok(OverlappingService) })
             .await
@@ -855,7 +778,9 @@ mod tests {
             Err(DiError::ServiceAlreadyRegistered(_, _))
         ));
 
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
         register_singleton(TestServiceA::new()).await.unwrap();
         let result = register_singleton(TestServiceA::new()).await;
         assert!(matches!(
@@ -863,7 +788,9 @@ mod tests {
             Err(DiError::ServiceAlreadyRegistered(_, _))
         ));
 
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
         register_singleton_name("my_named_svc", TestServiceA::new())
             .await
             .unwrap();
@@ -876,7 +803,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_no_scope_found() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         let result = DIScope::current();
         assert!(matches!(result, Err(DiError::FactoryError(_))));
@@ -884,7 +813,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_clear_scope_services() {
-        reset_global_di_state().await.unwrap();
+        super::test_utils::reset_global_di_state_for_tests()
+            .await
+            .unwrap();
 
         register_scope(|_| async move { Ok(ScopedClearService::new()) })
             .await
@@ -910,9 +841,7 @@ mod tests {
                     .scoped_instances
                     .contains_key(&(TypeId::of::<ScopedClearService>(), "".to_string()))
             );
-            Ok::<(), DiError>(())
         })
-            .await
-            .unwrap();
+        .await;
     }
 }
