@@ -45,8 +45,8 @@ Add the following to the [dependencies] section of your `Cargo.toml`:
 
 ```toml
 [dependencies]
-di = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.1" }
-with_di_scope = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.1", package = "with_di_scope" }
+di = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.2" }
+with_di_scope = { git = "https://github.com/bordunosp/rust_di.git", tag = "0.1.2", package = "with_di_scope" }
 ```
 
 ---
@@ -60,47 +60,25 @@ Let's illustrate the core functionalities with examples.
 You can register services with different lifetimes:
 
 ```rust
+struct AppConfig {
+  version: String,
+}
+
+struct RequestContext {
+  id: u64,
+}
+
+struct TransientService {
+  id: u32,
+}
 
 #[tokio::main]
-async fn main() {
-  // Define some simple services for demonstration
-  struct MySingletonService;
-  impl MySingletonService {
-    fn new() -> Self {
-      println!("Singleton created!");
-      Self
-    }
-  }
+async fn main() -> Result<(), di::DiError> {
+  di::register_singleton(AppConfig { version: "1.0".into() }).await?;
+  di::register_scope(|_| async { Ok(RequestContext { id: 123 }) }).await?;
+  di::register_transient(|_| async { Ok(TransientService { id: rand::random() }) }).await?;
 
-  struct MyScopedService;
-  impl MyScopedService {
-    fn new() -> Self {
-      println!("Scoped created!");
-      Self
-    }
-  }
-
-  struct MyTransientService;
-  impl MyTransientService {
-    fn new() -> Self {
-      println!("Transient created!");
-      Self
-    }
-  }
-
-  // Singleton: One instance for the entire application lifetime.
-  // Instances are created immediately upon registration.
-  di::register_singleton(MySingletonService::new()).await.unwrap();
-
-  // Scoped: An instance is created once per DIScope (async task/request).
-  // The factory function is called when first resolved within a scope.
-  di::register_scope(|_| async { Ok(MyScopedService::new()) }).await.unwrap();
-
-  // Transient: A new instance is created every time it's resolved.
-  // The factory function is called for each resolution request.
-  di::register_transient(|_| async { Ok(MyTransientService::new()) }).await.unwrap();
-
-  println!("Services registered.");
+  Ok(())
 }
 ```
 
@@ -110,51 +88,28 @@ Services are resolved within an asynchronous `DIScope`. For scoped and transient
 instance management.
 
 ```rust
-use tokio::sync::RwLock;
+use di::{DiError, DIScope};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
-// Assume MyUserService and MyDatabaseConnection are defined elsewhere and registered.
-// For example:
-struct MyDatabaseConnection {
-  pub id: usize
+struct Database {
+  url: String,
 }
-impl MyDatabaseConnection { fn new() -> Self { Self { id: 1 } } } // Example
-struct MyUserRepository {
-  db: Arc<RwLock<MyDatabaseConnection>>
+
+struct UserService {
+  db: Arc<RwLock<Database>>,
 }
-impl MyUserRepository { async fn new(db: Arc<RwLock<MyDatabaseConnection>>) -> Self { Self { db } } } // Example
-struct MyUserService {
-  user_repo: Arc<RwLock<MyUserRepository>>
-}
-impl MyUserService { async fn new(user_repo: Arc<RwLock<MyUserRepository>>) -> Self { Self { user_repo } } } // Example
 
 #[tokio::main]
-async fn main() -> Result<(), di::DiError> {
-  // Register your services (similar to the previous example)
-  di::register_scope(|_| async { Ok(MyDatabaseConnection::new()) }).await?;
-  di::register_transient(|scope| async move {
-    let db = scope.get::<MyDatabaseConnection>().await?;
-    Ok(MyUserRepository::new(db).await)
-  }).await?;
-  di::register_transient(|scope| async move {
-    let user_repo = scope.get::<MyUserRepository>().await?;
-    Ok(MyUserService::new(user_repo).await)
+async fn main() -> Result<(), DiError> {
+  di::register_singleton(Database { url: "postgres://localhost".into() }).await?;
+  di::register_transient(|scope| async {
+    Ok(UserService { db: scope.get::<Database>().await? })
   }).await?;
 
-  // To resolve services, you must be within a DIScope.
-  // `run_with_scope` creates a new scope for the async block.
-  di::DIScope::run_with_scope(|| async {
-    let resolver = di::DIScope::current()?; // Get the current scope resolver
-
-    // Resolve MyUserService. Its dependencies (MyUserRepository, MyDatabaseConnection)
-    // will be resolved automatically based on their registered lifetimes.
-    let user_service = resolver.get::<MyUserService>().await?;
-
-    println!("MyUserService resolved successfully.");
-    // You can now use user_service. E.g., access its inner data with .read().await
-    let db_id = user_service.read().await.user_repo.read().await.db.read().await.id;
-    println!("Database ID from resolved service: {}", db_id);
-
+  DIScope::run_with_scope(|| async {
+    let user_service = DIScope::current()?.get::<UserService>().await?;
+    println!("UserService using DB at {}", user_service.read().await.db.read().await.url);
     Ok(())
   }).await
 }
@@ -166,36 +121,34 @@ You can register and resolve multiple services of the same type using unique nam
 configuration or specialized implementations.
 
 ```rust
+use di::{DiError, DIScope};
+
+struct DatabaseConfig {
+  url: String,
+}
 
 #[tokio::main]
-async fn main() -> Result<(), di::DiError> {
-  #[derive(Debug)]
-  struct ConfigService {
-    connection_string: String,
-  }
-  impl ConfigService {
-    fn new(conn_str: String) -> Self { ConfigService { connection_string: conn_str } }
-  }
+async fn main() -> Result<(), DiError> {
+  di::register_singleton_name(
+    "primary",
+    DatabaseConfig { url: "postgres://primary".into() }
+  ).await?;
 
-  // Register named singleton instances
-  di::register_singleton_name("primary_db_config", ConfigService::new("mongodb://localhost:27017".to_string())).await?;
-  di::register_singleton_name("secondary_db_config", ConfigService::new("postgres://user:pass@host:5432/db".to_string())).await?;
+  di::register_singleton_name(
+    "replica",
+    DatabaseConfig { url: "postgres://replica".into() }
+  ).await?;
 
-  di::DIScope::run_with_scope(|| async {
-    let resolver = di::DIScope::current()?;
+  DIScope::run_with_scope(|| async {
+    let scope = DIScope::current()?;
+    let primary = scope.clone().by_name::<DatabaseConfig>("primary").await?;
+    let replica = scope.by_name::<DatabaseConfig>("replica").await?;
 
-    let primary_config = resolver.clone().by_name::<ConfigService>("primary_db_config").await?;
-    let secondary_config = resolver.clone().by_name::<ConfigService>("secondary_db_config").await?;
-
-    println!("Primary DB Config: {}", primary_config.read().await.connection_string);
-    println!("Secondary DB Config: {}", secondary_config.read().await.connection_string);
-
-    // Attempt to resolve an unnamed ConfigService (which doesn't exist)
-    let default_config_result = resolver.get::<ConfigService>().await;
-    if let Err(di::DiError::ServiceNotFound(_, name)) = default_config_result {
-      println!("Default ConfigService not found as expected (name: '{}')", name);
-    }
-
+    println!(
+      "Primary: {}, Replica: {}",
+      primary.read().await.url,
+      replica.read().await.url
+    );
     Ok(())
   }).await
 }
@@ -368,8 +321,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-### 5. Macros with_di_scope
+### 6.1 Macros with_di_scope (Simple)
 
+```rust
+use di::DiError;
+use with_di_scope::with_di_scope;
+
+struct AppConfig {
+    name: String,
+}
+
+#[with_di_scope]
+async fn handle_request() -> Result<(), DiError> {
+    let config = di::DIScope::current()?.get::<AppConfig>().await?;
+    println!("Handling request for app: {}", config.read().await.name);
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), DiError> {
+    di::register_singleton(AppConfig { name: "MyApp".into() }).await?;
+    handle_request().await
+}
+```
+
+### 6.2 Macros with_di_scope
 
 ```rust
 use with_di_scope::with_di_scope; // 1. Import the macro
