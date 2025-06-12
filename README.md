@@ -372,8 +372,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
 ```rust
-// BeautyServer/src/bin/queue/queue.rs
-
 use with_di_scope::with_di_scope; // 1. Import the macro
 
 // Import necessary parts of the di library
