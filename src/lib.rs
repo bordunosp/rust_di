@@ -84,8 +84,7 @@ impl DIScope {
             .try_with(|scope| scope.clone())
             .map_err(|e| {
                 DiError::FactoryError(Box::new(std::io::Error::other(format!(
-                    "No DI scope found in this task: {}",
-                    e
+                    "No DI scope found in this task: {e}",
                 ))))
             })
     }
@@ -130,8 +129,7 @@ impl DIScope {
             })
             .map_err(|e| {
                 DiError::FactoryError(Box::new(std::io::Error::other(format!(
-                    "Failed to access resolving stack: {}",
-                    e
+                    "Failed to access resolving stack: {e}",
                 ))))
             })??;
 
@@ -187,8 +185,7 @@ impl DIScope {
             })
             .map_err(|e| {
                 DiError::FactoryError(Box::new(std::io::Error::other(format!(
-                    "Failed to access resolving stack: {}",
-                    e
+                    "Failed to access resolving stack: {e}",
                 ))))
             })??;
 
