@@ -2,8 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ItemFn, parse_macro_input};
 
-#[proc_macro_attribute]
-pub fn with_di_scope(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub(crate) fn with_di_scope(item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
 
     let fn_name = &input_fn.sig.ident;

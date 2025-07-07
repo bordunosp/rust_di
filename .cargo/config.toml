@@ -1,0 +1,2 @@
+[alias]
+test-default = """test --no-default-features -- --test-threads=1"""

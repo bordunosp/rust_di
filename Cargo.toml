@@ -1,30 +1,20 @@
-[workspace]
-members = [
-    ".",
-    "macros/with_di_scope",
-]
-
 [package]
 name = "di"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.45.1", features = ["full"] }
-arc-swap = "1.7.1"
+di_macros = { path = "./di_macros" }
+tokio = { version = "1.46", features = ["full"] }
+arc-swap = "1.7"
 dashmap = "7.0.0-rc2"
-with_di_scope = { path = "./macros/with_di_scope" }
+thiserror = "2.0"
+async-trait = "0.1"
+once_cell = "1.21"
+ctor = "0.4"
 
 [profile.dev]
 opt-level = 0
 
 [profile.release]
 opt-level = 3
-
-
-#[dev-dependencies]
-#trybuild = "1.0.105"
-
-[features]
-test_utils = []
-

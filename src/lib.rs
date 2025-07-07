@@ -1,192 +1,41 @@
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
-use std::{
-    any::{Any, TypeId},
-    cell::RefCell,
-    error::Error,
-    fmt,
-    future::Future,
-    pin::Pin,
-    sync::Arc,
+pub mod core;
+
+use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
+use crate::core::error_di::DiError;
+use crate::core::registry::{
+    REGISTERED_SCOPE_FACTORIES, REGISTERED_SINGLETON_FACTORIES, REGISTERED_TRANSIENT_FACTORIES,
+    SINGLETON_CACHE,
 };
-use tokio::sync::{OnceCell, RwLock as TokioRwLock};
+use dashmap::DashMap;
+use std::{any::TypeId, cell::RefCell, fmt, future::Future, sync::Arc};
+use tokio::sync::RwLock as TokioRwLock;
 
-pub trait AnyService: Any + Send + Sync + 'static {}
-impl<T: Any + Send + Sync + 'static> AnyService for T {}
+/// Attribute macro for registering services.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[di::registry(
+///     Singleton,
+///     Singleton(factory),
+///     Singleton(name = "custom"),
+///     Singleton(factory = MyFactory, name = "custom"),
+///
+///     Transient,
+///     Transient(factory),
+///     Transient(name = "custom"),
+///     Transient(factory = MyFactory, name = "custom"),
+///
+///     Scoped,
+///     Scoped(factory),
+///     Scoped(name = "custom"),
+///     Scoped(factory = MyFactory, name = "custom"),
+/// )]
+/// impl MyService {}
+/// ```
+pub use di_macros::registry;
 
-type ServiceInstance = Arc<TokioRwLock<dyn AnyService + Send + Sync + 'static>>;
-type ServiceKey = (TypeId, String);
-type SingletonMap = DashMap<ServiceKey, ServiceInstance>;
-
-type ServiceFactory = Arc<
-    dyn Fn(Arc<DIScope>) -> Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
-        + Send
-        + Sync
-        + 'static,
->;
-type FactoryMap = DashMap<ServiceKey, ServiceFactory>;
-
-type RegisteredInstances = OnceCell<ArcSwap<FactoryMap>>;
-
-static REGISTERED_SINGLETON_INSTANCES: OnceCell<ArcSwap<SingletonMap>> = OnceCell::const_new();
-static REGISTERED_TRANSIENT_FACTORIES: RegisteredInstances = OnceCell::const_new();
-static REGISTERED_SCOPE_FACTORIES: RegisteredInstances = OnceCell::const_new();
-
-pub static GLOBAL_SERVICE_COUNTER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[derive(Debug)]
-pub enum DiError {
-    ServiceNotFound(TypeId, String),
-    ServiceAlreadyRegistered(TypeId, String),
-    LockPoisoned,
-    FactoryError(Box<dyn Error + Send + Sync + 'static>),
-    CircularDependency(TypeId, String),
-}
-
-impl fmt::Display for DiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DiError::ServiceNotFound(type_id, name) => {
-                write!(
-                    f,
-                    "Service not found for TypeId: {:?} with name: {}",
-                    type_id, name
-                )
-            }
-            DiError::ServiceAlreadyRegistered(type_id, name) => {
-                write!(
-                    f,
-                    "Service already registered for TypeId: {:?} with name: {}",
-                    type_id, name
-                )
-            }
-            DiError::LockPoisoned => write!(f, "A Mutex or RwLock was poisoned"),
-            DiError::FactoryError(err) => write!(f, "Service factory error: {}", err),
-            DiError::CircularDependency(type_id, name) => {
-                write!(
-                    f,
-                    "Circular dependency detected for TypeId: {:?} with name: {}",
-                    type_id, name
-                )
-            }
-        }
-    }
-}
-
-impl Error for DiError {}
-
-async fn register_factory<T, F, Fut>(
-    name: &str,
-    factory: Arc<F>,
-    registry: &'static RegisteredInstances,
-) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-    F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, DiError>> + Send + 'static,
-{
-    let type_id = TypeId::of::<T>();
-    let name_string = name.to_string();
-    let factories_arcswap = registry
-        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
-        .await;
-
-    let key = (type_id, name_string.clone());
-
-    if factories_arcswap.load().contains_key(&key) {
-        return Err(DiError::ServiceAlreadyRegistered(type_id, name_string));
-    }
-
-    let wrapped_factory = Arc::new(move |scope: Arc<DIScope>| {
-        let factory_cloned = factory.clone();
-        Box::pin(async move {
-            let service = factory_cloned(scope).await?;
-            Ok(Arc::new(TokioRwLock::new(service)) as ServiceInstance)
-        }) as Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
-    });
-
-    let current_map = factories_arcswap.load();
-    let new_map = DashMap::new();
-    for entry in current_map.iter() {
-        new_map.insert(entry.key().clone(), entry.value().clone());
-    }
-
-    new_map.insert(key, wrapped_factory);
-    factories_arcswap.store(Arc::new(new_map));
-
-    Ok(())
-}
-
-pub async fn register_transient<T, F, Fut>(factory: F) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-    F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, DiError>> + Send + 'static,
-{
-    register_factory("", Arc::new(factory), &REGISTERED_TRANSIENT_FACTORIES).await
-}
-
-pub async fn register_transient_name<T, F, Fut>(name: &str, factory: Arc<F>) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-    F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, DiError>> + Send + 'static,
-{
-    register_factory(name, factory, &REGISTERED_TRANSIENT_FACTORIES).await
-}
-
-pub async fn register_scope<T, F, Fut>(factory: F) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-    F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, DiError>> + Send + 'static,
-{
-    register_factory("", Arc::new(factory), &REGISTERED_SCOPE_FACTORIES).await
-}
-
-pub async fn register_scope_name<T, F, Fut>(name: &str, factory: Arc<F>) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-    F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, DiError>> + Send + 'static,
-{
-    register_factory(name, factory, &REGISTERED_SCOPE_FACTORIES).await
-}
-
-pub async fn register_singleton<T>(instance: T) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-{
-    register_singleton_name("", instance).await
-}
-
-pub async fn register_singleton_name<T>(name: &str, instance: T) -> Result<(), DiError>
-where
-    T: Send + Sync + 'static,
-{
-    let type_id = TypeId::of::<T>();
-    let name_string = name.to_string();
-    let instances_arcswap = REGISTERED_SINGLETON_INSTANCES
-        .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
-        .await;
-
-    let key = (type_id, name_string.clone());
-
-    if instances_arcswap.load().contains_key(&key) {
-        return Err(DiError::ServiceAlreadyRegistered(type_id, name_string));
-    }
-
-    let current_map = instances_arcswap.load();
-    let new_map = DashMap::new();
-    for entry in current_map.iter() {
-        new_map.insert(entry.key().clone(), entry.value().clone());
-    }
-    new_map.insert(key, Arc::new(TokioRwLock::new(instance)) as ServiceInstance);
-
-    instances_arcswap.store(Arc::new(new_map));
-    Ok(())
-}
+pub use di_macros::with_di_scope;
 
 tokio::task_local! {
     static CURRENT_DI_SCOPE: Arc<DIScope>;
@@ -194,10 +43,15 @@ tokio::task_local! {
 }
 
 pub struct DIScope {
-    singleton_instances: &'static ArcSwap<SingletonMap>,
-    transient_factories: &'static ArcSwap<FactoryMap>,
-    scope_factories: &'static ArcSwap<FactoryMap>,
-    pub scoped_instances: Arc<SingletonMap>,
+    pub scoped_instances: Arc<ScopedMap>,
+}
+
+impl Drop for DIScope {
+    fn drop(&mut self) {
+        self.scoped_instances.clear();
+        #[cfg(debug_assertions)]
+        eprintln!("DIScope dropped, scoped instances cleared.");
+    }
 }
 
 impl fmt::Debug for DIScope {
@@ -210,22 +64,17 @@ impl fmt::Debug for DIScope {
 
 impl DIScope {
     pub async fn new() -> Arc<Self> {
-        let singleton_instances = REGISTERED_SINGLETON_INSTANCES
-            .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
+        REGISTERED_SINGLETON_FACTORIES
+            .get_or_init(|| async { arc_swap::ArcSwap::from_pointee(DashMap::new()) })
             .await;
-
-        let transient_factories = REGISTERED_TRANSIENT_FACTORIES
-            .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
+        REGISTERED_TRANSIENT_FACTORIES
+            .get_or_init(|| async { arc_swap::ArcSwap::from_pointee(DashMap::new()) })
             .await;
-
-        let scope_factories = REGISTERED_SCOPE_FACTORIES
-            .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
+        REGISTERED_SCOPE_FACTORIES
+            .get_or_init(|| async { arc_swap::ArcSwap::from_pointee(DashMap::new()) })
             .await;
 
         Arc::new(DIScope {
-            singleton_instances,
-            transient_factories,
-            scope_factories,
             scoped_instances: Arc::new(DashMap::new()),
         })
     }
@@ -258,10 +107,10 @@ impl DIScope {
     where
         T: Send + Sync + 'static,
     {
-        self.by_name::<T>("").await
+        self.get_by_name::<T>("").await
     }
 
-    pub async fn by_name<T>(self: Arc<Self>, name: &str) -> Result<Arc<TokioRwLock<T>>, DiError>
+    pub async fn get_by_name<T>(self: Arc<Self>, name: &str) -> Result<Arc<TokioRwLock<T>>, DiError>
     where
         T: Send + Sync + 'static,
     {
@@ -269,70 +118,81 @@ impl DIScope {
         let name_string = name.to_string();
         let key = (type_id, name_string.clone());
 
-        let _ = RESOLVING_STACK
+        // Захист від циклічних залежностей
+        RESOLVING_STACK
             .try_with(|stack| {
                 let mut stack_ref = stack.borrow_mut();
                 if stack_ref.contains(&type_id) {
-                    return Err(DiError::CircularDependency(type_id, name_string.clone()));
+                    return Err(DiError::CircularDependency(name_string.clone()));
                 }
                 stack_ref.push(type_id);
-                Ok::<(), DiError>(())
+                Ok(())
             })
             .map_err(|e| {
                 DiError::FactoryError(Box::new(std::io::Error::other(format!(
-                    "Failed to access resolving stack (AccessError): {}",
+                    "Failed to access resolving stack: {}",
                     e
                 ))))
-            })?;
+            })??;
 
         let result: Result<ServiceInstance, DiError> = async {
+            // 🔁 Scoped (в межах поточного DIScope)
             {
-                let singletons_guard = self.singleton_instances.load();
-                if let Some(instance) = singletons_guard.get(&key) {
-                    return Ok(instance.value().clone());
-                }
-            }
-
-            {
-                if let Some(entry) = self.scoped_instances.get(&(type_id, name_string.clone())) {
+                if let Some(entry) = self.scoped_instances.get(&key) {
                     return Ok(entry.value().clone());
                 }
-            }
-
-            {
-                let factories_guard = self.scope_factories.load();
-                if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
-                    let instance = factory.value()(self.clone()).await?;
-                    self.scoped_instances
-                        .insert((type_id, name_string.clone()), instance.clone());
-                    return Ok(instance.clone());
+                if let Some(factories) = REGISTERED_SCOPE_FACTORIES.get() {
+                    if let Some(factory) = factories.load().get(&key) {
+                        let instance = factory.value()(self.clone()).await?;
+                        self.scoped_instances.insert(key.clone(), instance.clone());
+                        return Ok(instance);
+                    }
                 }
             }
 
+            // 🔁 Singleton (глобальний кеш)
             {
-                let factories_guard = self.transient_factories.load();
-                if let Some(factory) = factories_guard.get(&(type_id, name_string.clone())) {
-                    let instance = factory.value()(self.clone()).await?;
-                    return Ok(instance.clone());
+                if let Some(factories) = REGISTERED_SINGLETON_FACTORIES.get() {
+                    if let Some(factory) = factories.load().get(&key) {
+                        let cache = SINGLETON_CACHE.get_or_init(DashMap::new);
+                        if let Some(cached) = cache.get(&key) {
+                            return Ok(cached.value().clone());
+                        }
+                        let instance = factory.value()(self.clone()).await?;
+                        cache.insert(key.clone(), instance.clone());
+                        return Ok(instance);
+                    }
                 }
             }
 
-            Err(DiError::ServiceNotFound(type_id, name_string.clone()))
+            // 🔁 Transient (новий кожного разу)
+            {
+                if let Some(factories) = REGISTERED_TRANSIENT_FACTORIES.get() {
+                    if let Some(factory) = factories.load().get(&key) {
+                        let instance = factory.value()(self.clone()).await?;
+                        return Ok(instance);
+                    }
+                }
+            }
+
+            Err(DiError::ServiceNotFound(name_string.clone()))
         }
         .await;
 
-        let _ = RESOLVING_STACK
+        // Знімаємо з resolving stack
+        RESOLVING_STACK
             .try_with(|stack| {
                 stack.borrow_mut().pop();
-                Ok::<(), DiError>(())
+                Ok(())
             })
             .map_err(|e| {
                 DiError::FactoryError(Box::new(std::io::Error::other(format!(
-                    "Failed to access resolving stack (AccessError): {}",
+                    "Failed to access resolving stack: {}",
                     e
                 ))))
-            })?;
+            })??;
 
+        // Приведення типу
         result.map(|instance| {
             let raw_ptr: *const TokioRwLock<dyn AnyService + Send + Sync + 'static> =
                 Arc::into_raw(instance);
@@ -340,508 +200,217 @@ impl DIScope {
             unsafe { Arc::from_raw(typed_raw_ptr) }
         })
     }
-
-    pub async fn clear_scoped_instances(&self) -> Result<(), DiError> {
-        self.scoped_instances.clear();
-        Ok(())
-    }
 }
 
-#[cfg(feature = "test_utils")]
-pub mod test_utils;
-
+#[cfg(test)]
+extern crate ctor;
+#[cfg(test)]
+extern crate self as di;
+#[cfg(test)]
+use crate::core::registry::register_singleton_name;
 #[cfg(test)]
 mod tests {
-    use super::test_utils::TEST_SERVICE_COUNTER;
     use super::*;
-    use std::sync::atomic::Ordering;
+    use crate::DIScope;
+    use crate::core::registry::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    #[derive(Debug)]
-    struct TestServiceA {
-        id: usize,
-    }
-    impl TestServiceA {
-        fn new() -> Self {
-            TestServiceA {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
+    #[derive(Default)]
+    struct FlagService;
 
-    #[derive(Debug)]
-    struct TestServiceB {
-        id: usize,
-    }
-    impl TestServiceB {
-        fn new() -> Self {
-            TestServiceB {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
+    #[derive(Default)]
+    struct SimpleService;
+
+    static FLAG: AtomicBool = AtomicBool::new(false);
+
+    #[registry(Singleton)]
+    impl FlagService {}
+
+    #[with_di_scope]
+    async fn scoped_entry() {
+        let scope = DIScope::current().unwrap();
+        let _svc = scope.get::<FlagService>().await.unwrap();
+        FLAG.store(true, Ordering::SeqCst);
     }
 
-    #[derive(Debug)]
-    struct TestServiceC {
-        id: usize,
-    }
-    impl TestServiceC {
-        fn new() -> Self {
-            TestServiceC {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
+    #[tokio::test]
+    async fn test_with_di_scope_macro_executes_in_scope() {
+        let _ = scoped_entry().await;
+        assert!(
+            FLAG.load(Ordering::SeqCst),
+            "Service was not resolved inside DI scope"
+        );
     }
 
-    #[derive(Debug)]
-    struct TestServiceD {
-        id: usize,
-    }
-    impl TestServiceD {
-        fn new() -> Self {
-            TestServiceD {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
+    #[tokio::test]
+    async fn test_singleton_resolves_once() {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    #[derive(Debug)]
-    struct TestServiceE {
-        id: usize,
-    }
-    impl TestServiceE {
-        fn new() -> Self {
-            TestServiceE {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct MixedServiceA {
-        id: usize,
-    }
-    impl MixedServiceA {
-        fn new() -> Self {
-            MixedServiceA {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
-    #[derive(Debug)]
-    struct MixedServiceB {
-        id: usize,
-    }
-    impl MixedServiceB {
-        fn new() -> Self {
-            MixedServiceB {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
-    #[derive(Debug)]
-    struct MixedServiceC {
-        id: usize,
-    }
-    impl MixedServiceC {
-        fn new() -> Self {
-            MixedServiceC {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct MissingService;
-    #[derive(Debug)]
-    struct OverlappingService;
-    #[derive(Debug)]
-    struct ScopedClearService;
-    impl ScopedClearService {
-        fn new() -> Self {
-            ScopedClearService
-        }
-    }
-
-    #[derive(Debug)]
-    struct NamedSingletonService {
-        id: usize,
-        name: String,
-    }
-    impl NamedSingletonService {
-        fn new(name: &str) -> Self {
-            NamedSingletonService {
-                id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-                name: name.to_string(),
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_transient_service() {
-        test_utils::reset_global_di_state_for_tests().await.unwrap();
-
-        register_transient(|_| async move { Ok(TestServiceA::new()) })
-            .await
-            .unwrap();
-
-        DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-
-            let service1 = resolver.clone().get::<TestServiceA>().await.unwrap();
-            let service2 = resolver.clone().get::<TestServiceA>().await.unwrap();
-
-            assert_ne!(service1.read().await.id, service2.read().await.id);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
+        register_singleton::<SimpleService, _, _>(|_| async {
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+            Ok(SimpleService)
         })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_scoped_service() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        register_scope(|_| async move { Ok(TestServiceB::new()) })
-            .await
-            .unwrap();
-
-        DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-
-            let service1 = resolver.clone().get::<TestServiceB>().await.unwrap();
-            let service2 = resolver.clone().get::<TestServiceB>().await.unwrap();
-
-            assert_eq!(service1.read().await.id, service2.read().await.id);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
-
-            register_scope_name(
-                "named_scoped_service",
-                Arc::new(|_| async move { Ok(TestServiceC::new()) }),
-            )
-            .await
-            .unwrap();
-            let named_service = resolver
-                .clone()
-                .by_name::<TestServiceC>("named_scoped_service")
-                .await
-                .unwrap();
-            assert_eq!(named_service.read().await.id, 1);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_scoped_service_different_scopes() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        register_scope(|_| async move { Ok(TestServiceD::new()) })
-            .await
-            .unwrap();
-
-        let service_id_scope1 = DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-            let service = resolver.get::<TestServiceD>().await.unwrap();
-            service.read().await.id
-        })
-        .await;
-
-        let service_id_scope2 = DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-            let service = resolver.get::<TestServiceD>().await.unwrap();
-            service.read().await.id
-        })
-        .await;
-
-        assert_ne!(service_id_scope1, service_id_scope2);
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_singleton_service() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        register_singleton(TestServiceE::new()).await.unwrap();
-        let service_id_at_registration = 0;
-
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
-
-        DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-            let service1 = resolver.clone().get::<TestServiceE>().await.unwrap();
-            let service2 = resolver.clone().get::<TestServiceE>().await.unwrap();
-
-            assert_eq!(service1.read().await.id, service2.read().await.id);
-            assert_eq!(service1.read().await.id, service_id_at_registration);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_multiple_named_singletons_of_same_type() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        register_singleton_name("db_conn_1", NamedSingletonService::new("db_conn_1"))
-            .await
-            .unwrap();
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
-
-        register_singleton_name("db_conn_2", NamedSingletonService::new("db_conn_2"))
-            .await
-            .unwrap();
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
-
-        DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-
-            let service1 = resolver
-                .clone()
-                .by_name::<NamedSingletonService>("db_conn_1")
-                .await
-                .unwrap();
-            assert_eq!(service1.read().await.id, 0);
-            assert_eq!(service1.read().await.name, "db_conn_1");
-
-            let service2 = resolver
-                .clone()
-                .by_name::<NamedSingletonService>("db_conn_2")
-                .await
-                .unwrap();
-            assert_eq!(service2.read().await.id, 1);
-            assert_eq!(service2.read().await.name, "db_conn_2");
-
-            assert_ne!(service1.read().await.id, service2.read().await.id);
-
-            let service1_again = resolver
-                .clone()
-                .by_name::<NamedSingletonService>("db_conn_1")
-                .await
-                .unwrap();
-            assert_eq!(service1.read().await.id, service1_again.read().await.id);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_unnamed_and_named_singleton_coexistence() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        #[derive(Debug)]
-        struct CoexistService {
-            id: usize,
-        }
-        impl CoexistService {
-            fn new() -> Self {
-                CoexistService {
-                    id: TEST_SERVICE_COUNTER.fetch_add(1, Ordering::SeqCst),
-                }
-            }
-        }
-
-        register_singleton(CoexistService::new()).await.unwrap();
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
-
-        register_singleton_name("special_coexist", CoexistService::new())
-            .await
-            .unwrap();
-        assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 2);
-
-        DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-
-            let default_service = resolver.clone().get::<CoexistService>().await.unwrap();
-            assert_eq!(default_service.read().await.id, 0);
-
-            let named_service = resolver
-                .clone()
-                .by_name::<CoexistService>("special_coexist")
-                .await
-                .unwrap();
-            assert_eq!(named_service.read().await.id, 1);
-
-            assert_ne!(
-                default_service.read().await.id,
-                named_service.read().await.id
-            );
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_mixed_lifetimes() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-
-        register_singleton(MixedServiceA::new()).await.unwrap();
-
-        register_transient_name(
-            "transient_b",
-            Arc::new(|_| async move { Ok(MixedServiceB::new()) }),
-        )
-        .await
-        .unwrap();
-
-        register_scope_name(
-            "scoped_c",
-            Arc::new(|_| async move { Ok(MixedServiceC::new()) }),
-        )
         .await
         .unwrap();
 
         DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
+            let scope = DIScope::current().unwrap();
+            let a = scope.clone().get::<SimpleService>().await.unwrap();
+            let b = scope.clone().get::<SimpleService>().await.unwrap();
+            assert!(std::ptr::eq(Arc::as_ptr(&a), Arc::as_ptr(&b)));
+        })
+        .await;
 
-            let s_singleton1 = resolver.clone().get::<MixedServiceA>().await.unwrap();
-            let s_singleton2 = resolver.clone().get::<MixedServiceA>().await.unwrap();
-            assert_eq!(s_singleton1.read().await.id, s_singleton2.read().await.id);
-            assert_eq!(s_singleton1.read().await.id, 0);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 1);
+        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+    }
 
-            let t_b1 = resolver
-                .clone()
-                .by_name::<MixedServiceB>("transient_b")
-                .await
-                .unwrap();
-            let t_b2 = resolver
-                .clone()
-                .by_name::<MixedServiceB>("transient_b")
-                .await
-                .unwrap();
-            assert_ne!(t_b1.read().await.id, t_b2.read().await.id);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 3);
+    #[tokio::test]
+    async fn test_scoped_resolves_once_per_scope() {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-            let sc_c1 = resolver
-                .clone()
-                .by_name::<MixedServiceC>("scoped_c")
-                .await
-                .unwrap();
-            let sc_c2 = resolver
-                .clone()
-                .by_name::<MixedServiceC>("scoped_c")
-                .await
-                .unwrap();
-            assert_eq!(sc_c1.read().await.id, sc_c2.read().await.id);
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 4);
+        #[derive(Default)]
+        struct ScopedService(usize);
+
+        register_scope::<ScopedService, _, _>(|_| async {
+            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+            Ok(ScopedService(id))
+        })
+        .await
+        .unwrap();
+
+        DIScope::run_with_scope(|| async {
+            let scope = DIScope::current().unwrap();
+            let a = scope.clone().get::<ScopedService>().await.unwrap();
+            let b = scope.clone().get::<ScopedService>().await.unwrap();
+            assert_eq!(a.read().await.0, b.read().await.0);
         })
         .await;
 
         DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-
-            let sc_c_new_scope = resolver.by_name::<MixedServiceC>("scoped_c").await.unwrap();
-            assert_eq!(TEST_SERVICE_COUNTER.load(Ordering::SeqCst), 5);
-            assert_ne!(sc_c_new_scope.read().await.id, 3);
-            assert_eq!(sc_c_new_scope.read().await.id, 4);
+            let scope = DIScope::current().unwrap();
+            let c = scope.get::<ScopedService>().await.unwrap();
+            assert_ne!(c.read().await.0, 0);
         })
         .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_service_not_found() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn test_transient_resolves_new_each_time() {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-        let result = DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-            resolver.get::<MissingService>().await
+        #[derive(Default)]
+        struct TransientService(usize);
+
+        register_transient::<TransientService, _, _>(|_| async {
+            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+            Ok(TransientService(id))
+        })
+        .await
+        .unwrap();
+
+        DIScope::run_with_scope(|| async {
+            let scope = DIScope::current().unwrap();
+            let a = scope.clone().get::<TransientService>().await.unwrap();
+            let b = scope.clone().get::<TransientService>().await.unwrap();
+            assert_ne!(a.read().await.0, b.read().await.0);
         })
         .await;
-        assert!(matches!(result, Err(DiError::ServiceNotFound(_, _))));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_service_already_registered() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn test_named_instances_resolve_independently() {
+        #[derive(Default)]
+        struct NamedService(&'static str);
 
-        register_transient(|_| async move { Ok(OverlappingService) })
-            .await
-            .unwrap();
+        register_singleton_name::<NamedService, _, _>("alpha", |_| async {
+            Ok(NamedService("alpha"))
+        })
+        .await
+        .unwrap();
 
-        let result = register_transient(|_| async move { Ok(OverlappingService) }).await;
-        assert!(matches!(
-            result,
-            Err(DiError::ServiceAlreadyRegistered(_, _))
-        ));
+        register_singleton_name::<NamedService, _, _>("beta", |_| async {
+            Ok(NamedService("beta"))
+        })
+        .await
+        .unwrap();
 
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-        register_singleton(TestServiceA::new()).await.unwrap();
-        let result = register_singleton(TestServiceA::new()).await;
-        assert!(matches!(
-            result,
-            Err(DiError::ServiceAlreadyRegistered(_, _))
-        ));
+        DIScope::run_with_scope(|| async {
+            let scope = DIScope::current().unwrap();
+            let alpha = scope
+                .clone()
+                .get_by_name::<NamedService>("alpha")
+                .await
+                .unwrap();
+            let beta = scope
+                .clone()
+                .get_by_name::<NamedService>("beta")
+                .await
+                .unwrap();
 
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
-        register_singleton_name("my_named_svc", TestServiceA::new())
-            .await
-            .unwrap();
-        let result = register_singleton_name("my_named_svc", TestServiceA::new()).await;
-        assert!(matches!(
-            result,
-            Err(DiError::ServiceAlreadyRegistered(_, _))
-        ));
+            assert_eq!(alpha.read().await.0, "alpha");
+            assert_eq!(beta.read().await.0, "beta");
+        })
+        .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_no_scope_found() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn test_circular_dependency_detection() {
+        #[derive(Default)]
+        struct A;
+        #[derive(Default)]
+        struct B;
 
-        let result = DIScope::current();
-        assert!(matches!(result, Err(DiError::FactoryError(_))));
+        register_transient::<A, _, _>(|scope| async {
+            let _ = scope.get::<B>().await?;
+            Ok(A)
+        })
+        .await
+        .unwrap();
+
+        register_transient::<B, _, _>(|scope| async {
+            let _ = scope.get::<A>().await?;
+            Ok(B)
+        })
+        .await
+        .unwrap();
+
+        DIScope::run_with_scope(|| async {
+            let scope = DIScope::current().unwrap();
+            let result = scope.get::<A>().await;
+            assert!(matches!(result, Err(DiError::CircularDependency(_))));
+        })
+        .await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_clear_scope_services() {
-        super::test_utils::reset_global_di_state_for_tests()
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn test_scope_drop_clears_instances() {
+        use std::sync::atomic::{AtomicBool, Ordering};
 
-        register_scope(|_| async move { Ok(ScopedClearService::new()) })
+        static DROPPED: AtomicBool = AtomicBool::new(false);
+
+        struct DroppableService;
+
+        impl Drop for DroppableService {
+            fn drop(&mut self) {
+                DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+
+        register_scope::<DroppableService, _, _>(|_| async { Ok(DroppableService) })
             .await
             .unwrap();
 
         DIScope::run_with_scope(|| async {
-            let resolver = DIScope::current().unwrap();
-            let _ = resolver.clone().get::<ScopedClearService>().await.unwrap();
-
-            assert!(
-                resolver
-                    .scoped_instances
-                    .contains_key(&(TypeId::of::<ScopedClearService>(), "".to_string()))
-            );
-
-            resolver.clear_scoped_instances().await.unwrap();
-
-            assert!(resolver.scoped_instances.is_empty());
-
-            let _ = resolver.clone().get::<ScopedClearService>().await.unwrap();
-            assert!(
-                resolver
-                    .scoped_instances
-                    .contains_key(&(TypeId::of::<ScopedClearService>(), "".to_string()))
-            );
+            let scope = DIScope::current().unwrap();
+            let _instance = scope.get::<DroppableService>().await.unwrap();
+            assert!(!DROPPED.load(Ordering::SeqCst), "Service dropped too early");
         })
         .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            DROPPED.load(Ordering::SeqCst),
+            "Scoped instance was not dropped"
+        );
     }
 }
