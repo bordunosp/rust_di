@@ -33,7 +33,7 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --workspace -- --test-threads=1
+      run: cargo test-default
 
   # You can add a job for Clippy (linter) and Rustfmt (formatter) as well
   lint:
