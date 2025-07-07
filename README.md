@@ -35,7 +35,7 @@ wired up.
 
 ### 2. Register services
 
-```toml
+```rust
 #[derive(Default)]
 pub struct Logger;
 
