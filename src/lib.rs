@@ -1,7 +1,6 @@
 #![doc = "Dependency Injection framework for Rust"]
 extern crate self as di;
 
-
 pub mod core;
 
 use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
