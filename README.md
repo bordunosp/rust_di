@@ -223,3 +223,16 @@ tokio::spawn(async {
 Alternatively, pass the resolved dependencies into the task before spawning.
 
 
+--- 
+
+# #StandForUkraine 🇺🇦
+
+This project aims to show support for Ukraine and its people amidst a war that has been ongoing since 2014. This war has
+a genocidal nature and has led to the deaths of thousands, injuries to millions, and significant property damage. We
+believe that the international community should focus on supporting Ukraine and ensuring security and freedom for its
+people.
+
+Join us and show your support using the hashtag #StandForUkraine. Together, we can help bring attention to the issues
+faced by Ukraine and provide aid.
+
+
