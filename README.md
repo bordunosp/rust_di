@@ -22,7 +22,7 @@ A lightweight, async-friendly, scoped dependency injection container for Rust
 
 ```toml
 [dependencies]
-di = { git = "https://github.com/bordunosp/rust_di.git" }
+di = { package = "rust_di", version = "" }
 ctor = "0.4" # Required for automatic handler & pipeline registration
 ```
 
