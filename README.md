@@ -1,3 +1,9 @@
+[![Crates.io](https://img.shields.io/crates/v/rust_di.svg)](https://crates.io/crates/rust_di)
+[![Docs.rs](https://docs.rs/rust_di/badge.svg)](https://docs.rs/rust_di)
+[![License](https://img.shields.io/crates/l/rust_di)](https://crates.io/crates/rust_di)
+
+
+
 # 🧩 di — Dependency Injection for Rust
 
 A lightweight, async-friendly, scoped dependency injection container for Rust
