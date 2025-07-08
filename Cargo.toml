@@ -2,8 +2,11 @@
 name = "di"
 version = "1.0.0"
 edition = "2024"
+readme = "README.md"
+license = "MIT"
 authors = ["Bordunos Pavel <bordunos.p@gmail.com>"]
 repository = "https://github.com/bordunosp/rust_di"
+description = "DI — Dependency Injection for Rust"
 
 [dependencies]
 di_macros = { path = "./di_macros" }
