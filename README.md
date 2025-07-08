@@ -120,14 +120,20 @@ async fn QueueConsumerFactory(_: std::sync::Arc<DIScope>) -> Result<QueueConsume
     Ok(QueueConsumer { queue: rx })
 }
 
-#[with_di_scope]
 async fn run_consumer_loop() {
     let scope = DIScope::current().unwrap();
     let consumer = scope.get::<QueueConsumer>().await.unwrap();
 
     while let Some(msg) = consumer.read().await.queue.recv().await {
-        println!("Received: {msg}");
+        handle_message(msg).await;
     }
+}
+
+#[with_di_scope]
+async fn handle_message(msg: String) {
+    let scope = DIScope::current().unwrap();
+    let logger = scope.get::<Logger>().await.unwrap();
+    logger.read().await.log(&format!("Received: {msg}"));
 }
 ```
 
