@@ -126,6 +126,8 @@ dependencies = [
 [[package]]
 name = "di_macros"
 version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c59d07cd035bba27098809c0b975ff2c8f59828032fd320bab2cc3b7cb25ec2"
 dependencies = [
  "ctor",
  "proc-macro2",

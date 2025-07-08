@@ -9,7 +9,7 @@ repository = "https://github.com/bordunosp/rust_di"
 description = "DI — Dependency Injection for Rust"
 
 [dependencies]
-di_macros = { path = "./di_macros", version = "1.0.0" }
+di_macros = "1.0.0"
 tokio = { version = "1.46", features = ["full"] }
 arc-swap = "1.7"
 dashmap = "7.0.0-rc2"
