@@ -2,6 +2,10 @@
 name = "di_macros"
 version = "1.0.0"
 edition = "2024"
+license = "MIT"
+authors = ["Bordunos Pavel <bordunos.p@gmail.com>"]
+repository = "https://github.com/bordunosp/rust_di"
+description = "DI — Dependency Injection for Rust"
 
 [lib]
 proc-macro = true
