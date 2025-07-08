@@ -46,10 +46,10 @@ wired up.
 pub struct Logger;
 
 #[di::registry(
-Singleton,
-Singleton(name = "file_logger", factory = FileLoggerFactory),
-Transient(factory),
-Scoped
+    Singleton,
+    Singleton(name = "file_logger", factory = FileLoggerFactory),
+    Transient(factory),
+    Scoped
 )]
 impl Logger { }
 ```
