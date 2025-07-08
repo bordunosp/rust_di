@@ -110,20 +110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "di"
-version = "1.0.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "ctor",
- "dashmap",
- "di_macros",
- "once_cell",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "di_macros"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -290,6 +276,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "928fca9cf2aa042393a8325b9ead81d2f0df4cb12e1e24cef072922ccd99c5af"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "rust_di"
+version = "1.0.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "ctor",
+ "dashmap",
+ "di_macros",
+ "once_cell",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

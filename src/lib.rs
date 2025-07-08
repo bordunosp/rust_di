@@ -1,3 +1,7 @@
+#![doc = "Dependency Injection framework for Rust"]
+extern crate self as di;
+
+
 pub mod core;
 
 use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
@@ -201,8 +205,6 @@ impl DIScope {
 
 #[cfg(test)]
 extern crate ctor;
-#[cfg(test)]
-extern crate self as di;
 #[cfg(test)]
 use crate::core::registry::register_singleton_name;
 #[cfg(test)]
