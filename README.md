@@ -2,6 +2,7 @@
 ![Build Status](https://github.com/bordunosp/rust_di/actions/workflows/rust.yml/badge.svg)
 [![Docs.rs](https://docs.rs/rust_di/badge.svg)](https://docs.rs/rust_di)
 [![License](https://img.shields.io/crates/l/rust_di)](https://crates.io/crates/rust_di)
+[![Downloads](https://img.shields.io/crates/d/rust_di.svg?style=flat-square)](https://crates.io/crates/rust_di)
 
 
 
