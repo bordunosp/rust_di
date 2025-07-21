@@ -111,9 +111,9 @@ dependencies = [
 
 [[package]]
 name = "di_macros"
-version = "1.0.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c59d07cd035bba27098809c0b975ff2c8f59828032fd320bab2cc3b7cb25ec2"
+checksum = "81e70a907eaf4370b54397ae299ae691fee0c7a76ad961d0590cf9c572e97306"
 dependencies = [
  "ctor",
  "proc-macro2",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "rust_di"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arc-swap",
  "async-trait",
