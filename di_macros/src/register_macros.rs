@@ -59,20 +59,20 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 if reg.use_factory {
                     if let Some(factory_path) = &reg.factory_path {
                         quote! {
-                            ::di::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
+                            ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
                                 #factory_path::create(scope).await
                             }).await
                         }
                     } else {
                         quote! {
-                            ::di::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
+                            ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
                                 <#self_ty as ::di::DiFactory>::create(scope).await
                             }).await
                         }
                     }
                 } else {
                     quote! {
-                        ::di::register_singleton_name::<#self_ty, _, _>(#name_literal, |_scope| async move {
+                        ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |_scope| async move {
                             Ok(<#self_ty as ::std::default::Default>::default())
                         }).await
                     }
@@ -100,7 +100,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::register_scope_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
+                    ::di::core::registry::register_scope_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
                         Box::pin(async move {
                             #factory
                         })
@@ -129,7 +129,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::register_transient_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
+                    ::di::core::registry::register_transient_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
                         Box::pin(async move {
                             #factory
                         })
