@@ -100,11 +100,10 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::core::registry::register_scope_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
-                        Box::pin(async move {
-                            #factory
-                        })
-                    })).await
+                    ::di::core::registry::register_scope_name::<#self_ty, _, _>(
+                        #name_literal,
+                        |scope| Box::pin(async move { #factory })
+                    ).await
                 }
             }
             DiKind::Transient => {
@@ -129,11 +128,10 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::core::registry::register_transient_name::<#self_ty, _, _>(#name_literal, ::std::sync::Arc::new(|scope| {
-                        Box::pin(async move {
-                            #factory
-                        })
-                    })).await
+                    ::di::core::registry::register_transient_name::<#self_ty, _, _>(
+                        #name_literal,
+                        |scope| Box::pin(async move { #factory })
+                    ).await
                 }
             }
         };
