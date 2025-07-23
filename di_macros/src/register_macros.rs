@@ -122,7 +122,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
         };
 
         submissions.push(quote! {
-            inventory::submit! {
+            ::rust_di::inventory::submit! {
                 ::rust_di::core::di_inventory::DiConstructor {
                     init: || Box::pin(async move {
                         let scope = ::rust_di::DIScope::new().await;

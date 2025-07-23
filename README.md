@@ -27,7 +27,7 @@
 
 ```toml
 [dependencies]
-rust_di = "2.0.0"
+rust_di = "2.1.0"
 ```
 
 ### 2. Register Services (in a way convenient for you)
@@ -102,6 +102,29 @@ async fn main() {
     }).await;
 }
 ```
+
+# 🧠 Async Entrypoint — `#[rust_di::main]`
+
+Use `#[rust_di::main]` to simplify your async `fn main`. It ensures:
+
+* ✅ rust_di::initialize().await
+* ✅ DIScope::run_with_scope(...)
+* ✅ DI services available from the start
+
+
+### 🧪 Example
+
+```rust
+#[rust_di::main]
+#[tokio::main]
+async fn main() {
+    let scope = rust_di::DIScope::current().unwrap();
+    let logger = scope.get::<Logger>().await.unwrap();
+    logger.read().await.log("Started!");
+}
+```
+
+### ⚠️ Must be placed above #[tokio::main] to work correctly.
 
 ---
 

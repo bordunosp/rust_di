@@ -3,9 +3,14 @@
 version = 4
 
 [[package]]
+name = "di_internal_macros"
+version = "0.1.0"
+
+[[package]]
 name = "di_macros"
 version = "4.0.0"
 dependencies = [
+ "di_internal_macros",
  "inventory",
  "proc-macro2",
  "quote",

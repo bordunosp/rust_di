@@ -3,6 +3,10 @@ extern crate self as rust_di;
 
 pub mod core;
 
+pub use inventory;
+
+inventory::collect!(DiConstructor);
+
 use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
 use crate::core::di_inventory::DiConstructor;
 use crate::core::error_di::DiError;
@@ -14,6 +18,7 @@ use dashmap::DashMap;
 use std::{cell::RefCell, fmt, future::Future, sync::Arc};
 use tokio::sync::RwLock as TokioRwLock;
 
+pub use di_macros::main;
 /// Attribute macro for registering services.
 ///
 /// # Usage
@@ -65,8 +70,6 @@ pub struct DIScope {
 impl Drop for DIScope {
     fn drop(&mut self) {
         self.scoped_instances.clear();
-        #[cfg(debug_assertions)]
-        eprintln!("DIScope dropped, scoped instances cleared.");
     }
 }
 

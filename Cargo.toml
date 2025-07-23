@@ -1,6 +1,6 @@
 [package]
 name = "rust_di"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 readme = "README.md"
 license = "MIT"
@@ -17,7 +17,7 @@ categories = [
 
 
 [dependencies]
-di_macros = "4.0.0"
+di_macros = "4.1.0"
 tokio = { version = "1.46", features = ["full"] }
 arc-swap = "1.7"
 dashmap = "7.0.0-rc2"
