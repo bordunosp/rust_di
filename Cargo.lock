@@ -95,7 +95,9 @@ dependencies = [
 
 [[package]]
 name = "di_macros"
-version = "4.0.0"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590cc3be332becda5b1107201b7e6a0748e092ad26fbadb482f8b8e00acdf923"
 dependencies = [
  "inventory",
  "proc-macro2",
