@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use std::hash::{Hash, Hasher};
+use quote::quote;
+use std::hash::Hash;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::{Expr, ItemImpl, Lit, Meta, Path, Token, parse_macro_input};
@@ -24,7 +24,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
     let input = parse_macro_input!(item as ItemImpl);
     let self_ty = &input.self_ty;
 
-    let mut ctors = Vec::new();
+    let mut submissions = Vec::new();
 
     for reg in registrations {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -33,21 +33,6 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
         reg.name.hash(&mut hasher);
         reg.use_factory.hash(&mut hasher);
         reg.kind.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        let fn_name = format_ident!(
-            "__register_di_{}_{}_{}",
-            match reg.kind {
-                DiKind::Singleton => "singleton",
-                DiKind::Scoped => "scoped",
-                DiKind::Transient => "transient",
-            },
-            type_name
-                .replace("::", "_")
-                .replace('<', "_")
-                .replace('>', "_"),
-            hash
-        );
 
         let name_literal = syn::LitStr::new(
             reg.name.as_deref().unwrap_or(""),
@@ -59,20 +44,20 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 if reg.use_factory {
                     if let Some(factory_path) = &reg.factory_path {
                         quote! {
-                            ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
+                            ::rust_di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
                                 #factory_path::create(scope).await
                             }).await
                         }
                     } else {
                         quote! {
-                            ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
-                                <#self_ty as ::di::DiFactory>::create(scope).await
+                            ::rust_di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |scope| async move {
+                                <#self_ty as ::rust_di::core::factory::DiFactory>::create(scope).await
                             }).await
                         }
                     }
                 } else {
                     quote! {
-                        ::di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |_scope| async move {
+                        ::rust_di::core::registry::register_singleton_name::<#self_ty, _, _>(#name_literal, |_scope| async move {
                             Ok(<#self_ty as ::std::default::Default>::default())
                         }).await
                     }
@@ -83,13 +68,13 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                     if let Some(factory_path) = &reg.factory_path {
                         quote! {
                             let instance = #factory_path::create(scope).await
-                                .map_err(|e| ::di::DiError::FactoryError(Box::new(e)))?;
+                                .map_err(|e| ::rust_di::DiError::FactoryError(Box::new(e)))?;
                             Ok(instance)
                         }
                     } else {
                         quote! {
-                            let instance = <#self_ty as ::di::DiFactory>::create(scope).await
-                                .map_err(|e| ::di::DiError::FactoryError(Box::new(e)))?;
+                            let instance = <#self_ty as ::rust_di::core::factory::DiFactory>::create(scope).await
+                                .map_err(|e| ::rust_di::DiError::FactoryError(Box::new(e)))?;
                             Ok(instance)
                         }
                     }
@@ -100,7 +85,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::core::registry::register_scope_name::<#self_ty, _, _>(
+                    ::rust_di::core::registry::register_scope_name::<#self_ty, _, _>(
                         #name_literal,
                         |scope| Box::pin(async move { #factory })
                     ).await
@@ -111,13 +96,13 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                     if let Some(factory_path) = &reg.factory_path {
                         quote! {
                             let instance = #factory_path::create(scope).await
-                                .map_err(|e| ::di::DiError::FactoryError(Box::new(e)))?;
+                                .map_err(|e| ::rust_di::DiError::FactoryError(Box::new(e)))?;
                             Ok(instance)
                         }
                     } else {
                         quote! {
-                            let instance = <#self_ty as ::di::DiFactory>::create(scope).await
-                                .map_err(|e| ::di::DiError::FactoryError(Box::new(e)))?;
+                            let instance = <#self_ty as ::rust_di::core::factory::DiFactory>::create(scope).await
+                                .map_err(|e| ::rust_di::DiError::FactoryError(Box::new(e)))?;
                             Ok(instance)
                         }
                     }
@@ -128,7 +113,7 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
                 };
 
                 quote! {
-                    ::di::core::registry::register_transient_name::<#self_ty, _, _>(
+                    ::rust_di::core::registry::register_transient_name::<#self_ty, _, _>(
                         #name_literal,
                         |scope| Box::pin(async move { #factory })
                     ).await
@@ -136,23 +121,21 @@ pub(crate) fn generate_di_macro(attr: TokenStream, item: TokenStream) -> TokenSt
             }
         };
 
-        ctors.push(quote! {
-            #[doc(hidden)]
-            #[::ctor::ctor]
-            fn #fn_name() {
-                let _ = ::tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(async {
-                        let scope = ::di::DIScope::new().await;
-                        #registration
-                    });
+        submissions.push(quote! {
+            inventory::submit! {
+                ::rust_di::core::di_inventory::DiConstructor {
+                    init: || Box::pin(async move {
+                        let scope = ::rust_di::DIScope::new().await;
+                        let _ = #registration;
+                    })
+                }
             }
         });
     }
 
     let expanded = quote! {
         #input
-        #(#ctors)*
+        #(#submissions)*
     };
 
     TokenStream::from(expanded)

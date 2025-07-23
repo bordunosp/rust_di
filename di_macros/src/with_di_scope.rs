@@ -25,7 +25,7 @@ pub(crate) fn with_di_scope(item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #(#fn_attrs)*
         #fn_vis #fn_async fn #fn_name(#fn_inputs) #fn_output {
-            di::DIScope::run_with_scope(|| async {
+            rust_di::DIScope::run_with_scope(|| async {
                 #fn_block
             }).await
         }

@@ -1,6 +1,6 @@
 [package]
 name = "di_macros"
-version = "3.0.0"
+version = "4.0.0"
 edition = "2024"
 license = "MIT"
 authors = ["Bordunos Pavel <bordunos.p@gmail.com>"]
@@ -11,7 +11,7 @@ description = "DI — Dependency Injection for Rust"
 proc-macro = true
 
 [dependencies]
-ctor = "0.4"
+inventory = "0.3"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }

@@ -3,7 +3,6 @@ use crate::core::contracts::{RegisteredInstances, ServiceInstance};
 use crate::core::error_di::DiError;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use std::any::TypeId;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{OnceCell, RwLock as TokioRwLock};
@@ -13,7 +12,7 @@ pub(crate) static REGISTERED_TRANSIENT_FACTORIES: RegisteredInstances = OnceCell
 pub(crate) static REGISTERED_SCOPE_FACTORIES: RegisteredInstances = OnceCell::const_new();
 
 pub(crate) static SINGLETON_CACHE: once_cell::sync::OnceCell<
-    DashMap<(TypeId, String), ServiceInstance>,
+    DashMap<(String, String), ServiceInstance>,
 > = once_cell::sync::OnceCell::new();
 
 #[allow(dead_code)]
@@ -27,36 +26,32 @@ where
     F: Fn(Arc<DIScope>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<T, DiError>> + Send + 'static,
 {
-    let type_id = TypeId::of::<T>();
+    let type_key = std::any::type_name::<T>().to_string();
     let name_string = name.to_string();
     let factories_arcswap = registry
         .get_or_init(|| async { ArcSwap::from_pointee(DashMap::new()) })
         .await;
 
-    let key = (type_id, name_string.clone());
+    let key = (type_key, name_string.clone());
+    let factories = factories_arcswap.load();
 
-    if factories_arcswap.load().contains_key(&key) {
-        return Err(DiError::ServiceAlreadyRegistered(name_string));
+    use dashmap::mapref::entry::Entry;
+    match factories.entry(key.clone()) {
+        Entry::Occupied(_) => return Err(DiError::ServiceAlreadyRegistered(name_string)),
+        Entry::Vacant(entry) => {
+            let arc_factory = Arc::new(factory);
+            let wrapped_factory = Arc::new(move |scope: Arc<DIScope>| {
+                let factory_cloned = arc_factory.clone();
+                Box::pin(async move {
+                    let service = factory_cloned(scope).await?;
+                    Ok(Arc::new(TokioRwLock::new(service)) as ServiceInstance)
+                })
+                    as Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
+            });
+
+            entry.insert(wrapped_factory);
+        }
     }
-
-    let arc_factory = Arc::new(factory);
-
-    let wrapped_factory = Arc::new(move |scope: Arc<DIScope>| {
-        let factory_cloned = arc_factory.clone();
-        Box::pin(async move {
-            let service = factory_cloned(scope).await?;
-            Ok(Arc::new(TokioRwLock::new(service)) as ServiceInstance)
-        }) as Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
-    });
-
-    let current_map = factories_arcswap.load();
-    let new_map = DashMap::new();
-    for entry in current_map.iter() {
-        new_map.insert(entry.key().clone(), entry.value().clone());
-    }
-
-    new_map.insert(key, wrapped_factory);
-    factories_arcswap.store(Arc::new(new_map));
 
     Ok(())
 }
@@ -124,61 +119,78 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DIScope;
+    use crate::{DIScope, initialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct TestService;
+    struct UniqueSingletonService;
 
     #[tokio::test]
-    async fn test_register_singleton_and_resolve() {
-        register_singleton::<TestService, _, _>(|_| async { Ok(TestService) })
-            .await
-            .unwrap();
-
-        DIScope::run_with_scope(|| async {
-            let scope = DIScope::current().unwrap();
-            let resolved = scope.get::<TestService>().await.unwrap();
-            let guard = resolved.read().await;
-            let ptr = &*guard as *const TestService;
-            assert!(!ptr.is_null());
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_register_singleton_duplicate_should_fail() {
-        let _ = register_singleton_name::<TestService, _, _>("duplicate", |_| async {
-            Ok(TestService)
-        })
-        .await;
-
-        let result = register_singleton_name::<TestService, _, _>("duplicate", |_| async {
-            Ok(TestService)
-        })
-        .await;
-
-        assert!(matches!(result, Err(DiError::ServiceAlreadyRegistered(_))));
-    }
-
-    #[tokio::test]
-    async fn test_register_transient_returns_new_instance() {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-        #[derive(Default)]
-        struct CounterService(usize);
-
-        register_transient::<CounterService, _, _>(|_| async {
-            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-            Ok(CounterService(id))
+    async fn test_unique_singleton_register_and_resolve() {
+        initialize().await;
+        register_singleton::<UniqueSingletonService, _, _>(|_| async {
+            Ok(UniqueSingletonService)
         })
         .await
         .unwrap();
 
         DIScope::run_with_scope(|| async {
             let scope = DIScope::current().unwrap();
-            let a = scope.clone().get::<CounterService>().await.unwrap();
-            let b = scope.clone().get::<CounterService>().await.unwrap();
+            let resolved = scope.get::<UniqueSingletonService>().await.unwrap();
+            let guard = resolved.read().await;
+            let ptr = &*guard as *const UniqueSingletonService;
+            assert!(!ptr.is_null());
+        })
+        .await;
+    }
+
+    #[derive(Default)]
+    struct DuplicateCheckService;
+
+    #[tokio::test]
+    async fn test_unique_singleton_duplicate_should_fail() {
+        initialize().await;
+        let _ = register_singleton_name::<DuplicateCheckService, _, _>("duplicate", |_| async {
+            Ok(DuplicateCheckService)
+        })
+        .await;
+
+        let result =
+            register_singleton_name::<DuplicateCheckService, _, _>("duplicate", |_| async {
+                Ok(DuplicateCheckService)
+            })
+            .await;
+
+        assert!(matches!(result, Err(DiError::ServiceAlreadyRegistered(_))));
+    }
+
+    #[tokio::test]
+    async fn test_unique_transient_returns_new_instance() {
+        initialize().await;
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Default)]
+        struct TransientCounterService(usize);
+
+        register_transient::<TransientCounterService, _, _>(|_| async {
+            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+            Ok(TransientCounterService(id))
+        })
+        .await
+        .unwrap();
+
+        DIScope::run_with_scope(|| async {
+            let scope = DIScope::current().unwrap();
+            let a = scope
+                .clone()
+                .get::<TransientCounterService>()
+                .await
+                .unwrap();
+            let b = scope
+                .clone()
+                .get::<TransientCounterService>()
+                .await
+                .unwrap();
 
             let a_id = a.read().await.0;
             let b_id = b.read().await.0;
@@ -189,23 +201,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_scoped_returns_same_instance_within_scope() {
+    async fn test_unique_scoped_returns_same_instance_within_scope() {
+        initialize().await;
+
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         #[derive(Default)]
-        struct ScopedService(usize);
+        struct ScopedCounterService(usize);
 
-        register_scope::<ScopedService, _, _>(|_| async {
+        register_scope::<ScopedCounterService, _, _>(|_| async {
             let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-            Ok(ScopedService(id))
+            Ok(ScopedCounterService(id))
         })
         .await
         .unwrap();
 
         DIScope::run_with_scope(|| async {
             let scope = DIScope::current().unwrap();
-            let a = scope.clone().get::<ScopedService>().await.unwrap();
-            let b = scope.clone().get::<ScopedService>().await.unwrap();
+            let a = scope.clone().get::<ScopedCounterService>().await.unwrap();
+            let b = scope.clone().get::<ScopedCounterService>().await.unwrap();
 
             let a_id = a.read().await.0;
             let b_id = b.read().await.0;
@@ -216,18 +230,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_named_registration_and_resolution() {
-        #[derive(Default)]
-        struct NamedService(&'static str);
+    async fn test_unique_named_registration_and_resolution() {
+        initialize().await;
 
-        register_singleton_name::<NamedService, _, _>("alpha", |_| async {
-            Ok(NamedService("alpha"))
+        #[derive(Default)]
+        struct NamedAlphaBetaService(&'static str);
+
+        register_singleton_name::<NamedAlphaBetaService, _, _>("alpha", |_| async {
+            Ok(NamedAlphaBetaService("alpha"))
         })
         .await
         .unwrap();
 
-        register_singleton_name::<NamedService, _, _>("beta", |_| async {
-            Ok(NamedService("beta"))
+        register_singleton_name::<NamedAlphaBetaService, _, _>("beta", |_| async {
+            Ok(NamedAlphaBetaService("beta"))
         })
         .await
         .unwrap();
@@ -236,12 +252,12 @@ mod tests {
             let scope = DIScope::current().unwrap();
             let alpha = scope
                 .clone()
-                .get_by_name::<NamedService>("alpha")
+                .get_by_name::<NamedAlphaBetaService>("alpha")
                 .await
                 .unwrap();
             let beta = scope
                 .clone()
-                .get_by_name::<NamedService>("beta")
+                .get_by_name::<NamedAlphaBetaService>("beta")
                 .await
                 .unwrap();
 

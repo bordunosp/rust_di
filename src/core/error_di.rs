@@ -1,8 +1,8 @@
 use std::error::Error;
 use thiserror::Error;
 
-pub trait AnyError: Error + From<DiError> + Send + Sync + 'static {}
-impl<T> AnyError for T where T: Error + From<DiError> + Send + Sync + 'static {}
+pub trait AnyError: Error + Send + Sync + 'static {}
+impl<T> AnyError for T where T: Error + Send + Sync + 'static {}
 
 #[derive(Debug, Error)]
 pub enum DiError {
@@ -20,4 +20,7 @@ pub enum DiError {
 
     #[error("DiError: Circular dependency detected for with name: {0}")]
     CircularDependency(String),
+
+    #[error("DiError: External error during service creation: {0}")]
+    External(Box<dyn AnyError>),
 }

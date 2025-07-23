@@ -1,16 +1,17 @@
 #![doc = "Dependency Injection framework for Rust"]
-extern crate self as di;
+extern crate self as rust_di;
 
 pub mod core;
 
 use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
+use crate::core::di_inventory::DiConstructor;
 use crate::core::error_di::DiError;
 use crate::core::registry::{
     REGISTERED_SCOPE_FACTORIES, REGISTERED_SINGLETON_FACTORIES, REGISTERED_TRANSIENT_FACTORIES,
     SINGLETON_CACHE,
 };
 use dashmap::DashMap;
-use std::{any::TypeId, cell::RefCell, fmt, future::Future, sync::Arc};
+use std::{cell::RefCell, fmt, future::Future, sync::Arc};
 use tokio::sync::RwLock as TokioRwLock;
 
 /// Attribute macro for registering services.
@@ -18,7 +19,7 @@ use tokio::sync::RwLock as TokioRwLock;
 /// # Usage
 ///
 /// ```ignore
-/// #[di::registry(
+/// #[rust_di::registry(
 ///     Singleton,
 ///     Singleton(factory),
 ///     Singleton(name = "custom"),
@@ -37,12 +38,24 @@ use tokio::sync::RwLock as TokioRwLock;
 /// impl MyService {}
 /// ```
 pub use di_macros::registry;
-
 pub use di_macros::with_di_scope;
+
+use tokio::sync::OnceCell;
+
+static INIT: OnceCell<()> = OnceCell::const_new();
+
+pub async fn initialize() {
+    INIT.get_or_init(|| async {
+        for ctor in inventory::iter::<DiConstructor> {
+            (ctor.init)().await;
+        }
+    })
+    .await;
+}
 
 tokio::task_local! {
     static CURRENT_DI_SCOPE: Arc<DIScope>;
-    static RESOLVING_STACK: RefCell<Vec<TypeId>>;
+    static RESOLVING_STACK: RefCell<Vec<String>>;
 }
 
 pub struct DIScope {
@@ -116,18 +129,18 @@ impl DIScope {
     where
         T: Send + Sync + 'static,
     {
-        let type_id = TypeId::of::<T>();
+        let type_key = std::any::type_name::<T>().to_string();
         let name_string = name.to_string();
-        let key = (type_id, name_string.clone());
+        let key = (type_key.clone(), name_string.clone());
 
         // Захист від циклічних залежностей
         RESOLVING_STACK
             .try_with(|stack| {
                 let mut stack_ref = stack.borrow_mut();
-                if stack_ref.contains(&type_id) {
+                if stack_ref.contains(&type_key) {
                     return Err(DiError::CircularDependency(name_string.clone()));
                 }
-                stack_ref.push(type_id);
+                stack_ref.push(type_key.clone());
                 Ok(())
             })
             .map_err(|e| {
@@ -203,13 +216,10 @@ impl DIScope {
 }
 
 #[cfg(test)]
-extern crate ctor;
-#[cfg(test)]
-use crate::core::registry::register_singleton_name;
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::DIScope;
+    use crate::core::registry::register_singleton_name;
     use crate::core::registry::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -226,6 +236,7 @@ mod tests {
 
     #[with_di_scope]
     async fn scoped_entry() {
+        initialize().await;
         let scope = DIScope::current().unwrap();
         let _svc = scope.get::<FlagService>().await.unwrap();
         FLAG.store(true, Ordering::SeqCst);
@@ -233,6 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_di_scope_macro_executes_in_scope() {
+        initialize().await;
         let _ = scoped_entry().await;
         assert!(
             FLAG.load(Ordering::SeqCst),
@@ -242,6 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_singleton_resolves_once() {
+        initialize().await;
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         register_singleton::<SimpleService, _, _>(|_| async {
@@ -264,6 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scoped_resolves_once_per_scope() {
+        initialize().await;
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         #[derive(Default)]
@@ -294,6 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transient_resolves_new_each_time() {
+        initialize().await;
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         #[derive(Default)]
@@ -317,6 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_named_instances_resolve_independently() {
+        initialize().await;
         #[derive(Default)]
         struct NamedService(&'static str);
 
@@ -353,6 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_circular_dependency_detection() {
+        initialize().await;
         #[derive(Default)]
         struct A;
         #[derive(Default)]
@@ -382,6 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scope_drop_clears_instances() {
+        initialize().await;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         static DROPPED: AtomicBool = AtomicBool::new(false);

@@ -4,146 +4,135 @@
 [![License](https://img.shields.io/crates/l/rust_di)](https://crates.io/crates/rust_di)
 [![Downloads](https://img.shields.io/crates/d/rust_di.svg?style=flat-square)](https://crates.io/crates/rust_di)
 
-
-
-# 🧩 di — Dependency Injection for Rust
-
-A lightweight, async-friendly, scoped dependency injection container for Rust
+# 🧩 `rust_di` — Declarative, Async-Safe Dependency Injection for Rust
 
 ---
 
-## ✨ Features
+## ✨ Highlights
 
-- ✅ Singleton / Scoped / Transient lifetimes
-- ✅ Named service instances
-- ✅ Async factory support
-- ✅ Circular dependency detection
-- ✅ Procedural macro for registration
-- ✅ Task-local scope isolation
-- ✅ Thread-safe with `Arc` + `RwLock`
+* 🚀 Async-first architecture (factory-based, scoped resolution)
+* 🧠 Lifetimes: Singleton, Scoped, Transient
+* 📛 Named service instances
+* 💡 Declarative registration via #[rust_di::registry(...)]
+* 🔁 Task-local isolation (tokio::task_local!)
+* 🧰 Procedural macros with zero boilerplate
+* 🧪 Circular dependency detection
+* 📦 Thread-safe (using Arc, RwLock, DashMap, ArcSwap, OnceCell)
 
 ---
 
-## 🚀 Quick Start
+## ⚡️ Getting Started
 
 ### 1. Add to `Cargo.toml`
 
 ```toml
 [dependencies]
-di = { package = "rust_di", version = "" }
-ctor = "0.4" # Required for automatic handler & pipeline registration
+rust_di = "2.0.0"
 ```
 
-**Why `ctor`?**
-
-`di` uses the `ctor` crate to automatically register services at startup. Without it, nothing will be
-wired up.
-
----
-
-### 2. Register services
+### 2. Register Services (in a way convenient for you)
 
 ```rust
 #[derive(Default)]
 pub struct Logger;
 
-#[di::registry(
+#[rust_di::registry(
     Singleton,
-    Singleton(name = "file_logger", factory = FileLoggerFactory),
+    Singleton(factory),
+    Singleton(name = "file_logger"),
+    Singleton(name = "console_logger"),
+    Singleton(name = "email_logger", factory = EmailLoggerFactory),
+    Transient,
     Transient(factory),
-    Scoped
+    Transient(name = "file_logger"),
+    Transient(name = "console_logger"),
+    Transient(name = "email_logger", factory = EmailLoggerFactory),
+    Scoped,
+    Scoped(factory),
+    Scoped(name = "file_logger"),
+    Scoped(name = "console_logger"),
+    Scoped(name = "email_logger", factory = EmailLoggerFactory),
 )]
-impl Logger { }
+impl Logger {}
+
 ```
 
-### 3. Resolve services
+---
+
+### 3. Resolve Inside Scope
+
+### 🧮 Scope Bootstrapping
+
+Before resolving any services, make sure to initialize the DI system:
 
 ```rust
 #[tokio::main]
 async fn main() {
-    di::DIScope::run_with_scope(|| async {
-        let scope = di::DIScope::current().unwrap();
+    rust_di::initialize().await;
+}
+```
 
-        let logger = scope.get::<Logger>().await.unwrap();
-        logger.read().await.log("Hello from DI!");
+#### This sets up:
 
-        let file_logger = scope.get_by_name::<Logger>("file_logger").await.unwrap();
-        file_logger.read().await.log("To file!");
+* All services declared via inventory::submit!
+* Global singletons & factories
+* Internal caches and resolving state
+
+#### You only need to call it once, typically at the beginning of main() or your test setup.
+
+-----
+
+### 🔍 Example: Main Function with Initialization
+
+```rust
+#[tokio::main]
+async fn main() {
+    rust_di::initialize().await;
+
+    rust_di::DIScope::run_with_scope(|| async {
+        let di = rust_di::DIScope::current().unwrap();
+
+        let logger = di.clone().get::<Logger>().await.unwrap();
+        logger.read().await.log("Hello!");
+
+        let file_logger = di.get_by_name::<Logger>("file").await.unwrap();
+        file_logger.read().await.log("Writing to file...");
     }).await;
 }
 ```
 
-### 🌀 Automatic DI Scope Initialization - `#[di::with_di_scope]`
-
-The #[di::with_di_scope] macro wraps an async fn in DIScope::run_with_scope(...), automatically initializing the task-local context required for resolving dependencies.
-
 ---
-### ✅ Example: Replacing main
 
-You can replace the entire `DIScope::run_with_scope` block in your main function with a simple `macro`:
+## 🌀 Automatic DI Scope Initialization - `#[with_di_scope]`
+
+#### ⚠️ The `#[rust_di::with_di_scope]` macro works only on standalone
+
+`async fn`, not on trait methods or functions wrapped with conflicting attribute macros such as `#[tokio::main]` or
+`#[test]`.
+
+#### ✅ Use it for plain
+
+`async fn` entrypoints, background workers, or utility functions where full DI context is needed.
 
 ```rust
-use di::{with_di_scope, DIScope};
-
-#[di::registry(Singleton)]
-impl Logger {}
-
-#[di::with_di_scope]
-async fn main() {
-    let scope = DIScope::current().unwrap();
-    let logger = scope.get::<Logger>().await.unwrap();
-    logger.read().await.log("Hello from DI!");
+#[rust_di::with_di_scope]
+async fn consume_queue() {
+    let di = DIScope::current().unwrap();
+    let consumer = di.get::<Consumer>().await.unwrap();
+    consumer.read().await.run().await;
 }
 ```
 
-## 🧠 This macro fully replaces the manual block shown in section 3. Resolve services.
-
----
-
-### 🔁 Example: Background queue consumer loop
-
-```rust
-use di::{with_di_scope, DIScope};
-use tokio::sync::mpsc::{self, Receiver};
-
-#[derive(Default)]
-struct QueueConsumer {
-    queue: Receiver<String>,
-}
-
-#[di::registry(Singleton(factory = QueueConsumerFactory))]
-impl QueueConsumer {}
-
-async fn QueueConsumerFactory(_: std::sync::Arc<DIScope>) -> Result<QueueConsumer, di::DiError> {
-    let (tx, rx) = mpsc::channel(100);
-    tokio::spawn(async move {
-        let _ = tx.send("Hello from queue".into()).await;
-    });
-    Ok(QueueConsumer { queue: rx })
-}
-
-async fn run_consumer_loop() {
-    let scope = DIScope::current().unwrap();
-    let consumer = scope.get::<QueueConsumer>().await.unwrap();
-
-    while let Some(msg) = consumer.read().await.queue.recv().await {
-        handle_message(msg).await;
-    }
-}
-
-#[with_di_scope]
-async fn handle_message(msg: String) {
-    let scope = DIScope::current().unwrap();
-    let logger = scope.get::<Logger>().await.unwrap();
-    logger.read().await.log(&format!("Received: {msg}"));
-}
-```
+#### 🧠 This macro fully replaces the manual block shown in section 3. Resolve services.
 
 This pattern is ideal for long-running background tasks, workers, or event handlers that need access to scoped services.
 
 ---
 
+---
+
 ### ✅ Why use #[with_di_scope]?
+
 * Eliminates boilerplate around `DIScope::run_with_scope`
 * Ensures `task-local` variables are properly initialized
 * Works seamlessly in `main`, `background loops`, or any `async entrypoint`
@@ -151,27 +140,125 @@ This pattern is ideal for long-running background tasks, workers, or event handl
 
 ---
 
-### 🧠 Lifetimes
+## 🔄 Service Dependencies via `DiFactory`
 
-| Lifetime  | Behavior                                 |
-|:----------|:-----------------------------------------|
-| Singleton | One instance per app                     |
-| Scoped    | One instance per DIScope::run_with_scope |
-| Transient | New instance every time                  |
-
-
-### 🧰 Procedural Macro
-
-Use `#[di::registry(...)]` to register services declaratively:
+#### You can declare service dependencies by implementing
+`DiFactory`. This allows a service to resolve other services during its creation:
 
 ```rust
-#[di::registry(
-    Singleton,
-    Scoped(factory),
-    Transient(name = "custom")
-)]
-impl MyService {}
+use rust_di::DIScope;
+use rust_di::core::error_di::DiError;
+use rust_di::core::factory::DiFactory;
+use rust_di::registry;
+use std::sync::Arc;
+
+#[derive(Default)]
+pub struct Logger;
+
+#[registry(Singleton)]
+impl Logger {}
+
+pub struct Processor {
+    pub logger: Arc<Logger>,
+}
+
+#[registry(Singleton(factory))]
+impl Processor {}
+
+#[async_trait::async_trait]
+impl DiFactory for Processor {
+    async fn create(scope: Arc<DIScope>) -> Result<Self, DiError> {
+        let logger = scope.get::<Logger>().await?;
+        Ok(Processor {
+            logger: logger.read().await.clone(),
+        })
+    }
+}
 ```
+
+#### The `DiFactory` is automatically invoked if factory is enabled in #[registry(...)].
+
+### ✨ Factory Benefits
+
+* 🔧 Resolves dependencies with async precision
+* 🎯 Keeps instantiation logic colocated
+* 🧩 Enables complex composition across lifetimes
+
+---
+
+## ✋ Manual Service Registration
+
+In some situations—like ordering guarantees, test injection, or dynamic setup—you may want to bypass macros and register
+manually:
+
+```rust
+use rust_di::DIScope;
+use rust_di::core::error_di::DiError;
+use rust_di::core::registry::register_singleton_name;
+
+#[derive(Default)]
+pub struct Logger;
+
+#[tokio::main]
+async fn main() -> Result<(), DiError> {
+    rust_di::initialize().await;
+
+    // Manual registration
+    register_singleton_name::<Logger, _, _>("file", |_| async { Ok(Logger::default()) }).await?;
+
+    DIScope::run_with_scope(|| async {
+        let di = DIScope::current().unwrap();
+        let logger = di.get_by_name::<Logger>("file").await?;
+        logger.read().await.log("Manual registration works!");
+        Ok(())
+    }).await
+}
+```
+
+---
+
+## 🧠 Manual API Available
+
+Function Description
+register_singleton unnamed global instance
+register_singleton_name(name)    named global instance
+register_scope_name(name)    scoped factory
+register_transient_name(name)    re-created per request
+
+| Function                | Description                  |
+|:------------------------|:-----------------------------|
+| register_transient      | re-created per request       |
+| register_transient_name | named re-created per request |
+| register_scope          | scoped factory               |
+| register_scope_name     | named scoped factory         |
+| register_singleton      | unnamed global instance      |
+| register_singleton_name | named global instance        |
+
+#### All support factories and return Result.
+
+#### 📚 These extensions give you full control—whether bootstrapping large systems, injecting mocks in tests, or dynamically assembling modules.
+
+---
+
+## 🔐 Safety Model
+
+* Services stored as `Arc<RwLock<T>>`
+* Global state managed via `OnceCell` & `ArcSwap`
+* Scope-local cache via `DashMap`
+* Panics on usage outside active DI scope
+* Circular dependency errors on recursive resolutions
+
+---
+
+### 🧠 Lifetimes
+
+| Lifetime  | Behavior                                                    |
+|:----------|:------------------------------------------------------------|
+| Singleton | One instance per App.<br/> Global, shared across all scopes |
+| Scoped    | Created one instance per DIScope::run_with_scope()          |
+| Transient | New instance every time<br/>Re-created on every .get()      |
+
+### 🧰 Procedural Macro
 
 Supports:
 
@@ -181,53 +268,40 @@ Supports:
 
 ---
 
-### 🧪 Testing
-
-```
-cargo test-default
-```
-
-Covers:
-
-* Singleton caching
-* Scoped reuse
-* Transient instantiation
-* Named resolution
-* Circular dependency detection
-
----
-
 ### 🔒 Safety
 
 * All services are stored as `Arc<RwLock<T>>`
 * Internally uses `DashMap`, `ArcSwap`, and `OnceCell`
-* Task-local isolation via `tokio::task_local!`
----
+* `Task-local` isolation via `tokio::task_local!`
 
+---
 
 ### ⚠️ Limitation: `tokio::spawn` drops DI context
 
-Because `DIScope` relies on `task-local` variables (`tokio::task_local!`), spawning a new task with `tokio::spawn` will lose the current DI scope context.
+Because `DIScope` relies on `task-local` variables (`tokio::task_local!`), spawning a new task with `tokio::spawn` will
+lose the current DI scope context.
 
 ```rust
-tokio::spawn(async {
+tokio::spawn( async {
     // ❌ This will panic: no DI scope found
     let scope = DIScope::current().unwrap();
 });
 ```
 
 ### ✅ Workaround
+
 If you need to spawn a task that uses DI, wrap the task in a new scope:
 
 ```rust
-tokio::spawn(async {
-    di::DIScope::run_with_scope(|| async {
+tokio::spawn( async {
+    rust_di::DIScope::run_with_scope(|| async {
         let scope = di::DIScope::current().unwrap();
-        let logger = scope.get::<Logger>().await.unwrap();
+        let logger = scope.get::< Logger > ().await.unwrap();
         logger.read().await.log("Inside spawned task");
     }).await;
 });
 ```
+
 Alternatively, pass the resolved dependencies into the task before spawning.
 
 
