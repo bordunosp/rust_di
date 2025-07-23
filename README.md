@@ -42,11 +42,13 @@ pub struct Logger;
     Singleton(name = "file_logger"),
     Singleton(name = "console_logger"),
     Singleton(name = "email_logger", factory = EmailLoggerFactory),
+
     Transient,
     Transient(factory),
     Transient(name = "file_logger"),
     Transient(name = "console_logger"),
     Transient(name = "email_logger", factory = EmailLoggerFactory),
+
     Scoped,
     Scoped(factory),
     Scoped(name = "file_logger"),
@@ -129,9 +131,7 @@ This pattern is ideal for long-running background tasks, workers, or event handl
 
 ---
 
----
-
-### ✅ Why use #[with_di_scope]?
+### ✅ Why use `#[with_di_scope]`?
 
 * Eliminates boilerplate around `DIScope::run_with_scope`
 * Ensures `task-local` variables are properly initialized
@@ -142,8 +142,8 @@ This pattern is ideal for long-running background tasks, workers, or event handl
 
 ## 🔄 Service Dependencies via `DiFactory`
 
-#### You can declare service dependencies by implementing
-`DiFactory`. This allows a service to resolve other services during its creation:
+#### You can declare service dependencies by implementing `DiFactory`. 
+#### This allows a service to resolve other services during its creation:
 
 ```rust
 use rust_di::DIScope;
