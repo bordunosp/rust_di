@@ -1,8 +1,9 @@
+use std::any::Any;
 use std::error::Error;
 use thiserror::Error;
 
 pub trait AnyError: Error + Send + Sync + 'static {}
-impl<T> AnyError for T where T: Error + Send + Sync + 'static {}
+impl<T> AnyError for T where T: Error + Any + Send + Sync + 'static {}
 
 #[derive(Debug, Error)]
 pub enum DiError {
