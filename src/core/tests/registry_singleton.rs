@@ -3,6 +3,7 @@ use rust_di::DIScope;
 use rust_di::DiError;
 use rust_di::core::factory::DiFactory;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 struct SimpleService {
     pub value: &'static str,
@@ -28,15 +29,22 @@ async fn test_singleton_default_registration() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
         let instance = scope.get::<SimpleService>().await.unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "default");
     })
     .await;
 }
 
-#[derive(Default)]
 struct NamedService {
-    pub value: &'static str,
+    pub value: Mutex<&'static str>,
+}
+
+impl Default for NamedService {
+    fn default() -> Self {
+        NamedService {
+            value: Mutex::new("default"),
+        }
+    }
 }
 
 #[rust_di::registry(Singleton(name = "custom_name"))]
@@ -48,22 +56,23 @@ async fn test_singleton_named_registration() {
 
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
+
         {
             let instance = scope
                 .clone()
                 .get_by_name::<NamedService>("custom_name")
                 .await
                 .unwrap();
-            let mut srv = instance.write().await;
-            srv.value = "custom_name 22";
+            let mut val_guard = instance.value.lock().await;
+            *val_guard = "custom_name 22";
         }
 
         let instance = scope
             .get_by_name::<NamedService>("custom_name")
             .await
             .unwrap();
-        let value = instance.read().await.value;
-        assert_eq!(value, "custom_name 22");
+        let final_value = *instance.value.lock().await;
+        assert_eq!(final_value, "custom_name 22");
     })
     .await;
 }
@@ -89,7 +98,7 @@ async fn test_singleton_factory_registration() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
         let instance = scope.get::<FactoryService>().await.unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "factory");
     })
     .await;
@@ -121,7 +130,7 @@ async fn test_singleton_named_factory_registration() {
             .get_by_name::<NamedFactoryService>("custom_factory")
             .await
             .unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "named factory");
     })
     .await;
@@ -148,15 +157,22 @@ async fn test_singleton_auto_factory_registration() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
         let instance = scope.get::<AutoFactoryService>().await.unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "auto");
     })
     .await;
 }
 
-#[derive(Default)]
 struct MultiNamedService {
-    pub value: &'static str,
+    pub value: Mutex<&'static str>,
+}
+
+impl Default for MultiNamedService {
+    fn default() -> Self {
+        MultiNamedService {
+            value: Mutex::new("default"),
+        }
+    }
 }
 
 #[rust_di::registry(Singleton(name = "first"))]
@@ -170,49 +186,37 @@ async fn test_multiple_named_instances_are_distinct() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
 
-        {
-            // Змінюємо значення першого інстансу
-            let instance = scope
-                .clone()
-                .get_by_name::<MultiNamedService>("first")
-                .await
-                .unwrap();
-            let mut srv = instance.write().await;
-            srv.value = "updated first";
-        }
-
-        {
-            // Змінюємо значення другого інстансу
-            let instance = scope
-                .clone()
-                .get_by_name::<MultiNamedService>("second")
-                .await
-                .unwrap();
-            let mut srv = instance.write().await;
-            srv.value = "updated second";
-        }
-
-        let first_value = scope
+        // Отримуємо і змінюємо перший
+        let first = scope
             .clone()
             .get_by_name::<MultiNamedService>("first")
             .await
-            .unwrap()
-            .read()
-            .await
-            .value;
+            .unwrap();
+        {
+            let mut g = first.value.lock().await;
+            *g = "updated first";
+        }
 
-        let second_value = scope
+        // Отримуємо і змінюємо другий
+        let second = scope
             .clone()
             .get_by_name::<MultiNamedService>("second")
             .await
-            .unwrap()
-            .read()
-            .await
-            .value;
+            .unwrap();
+        {
+            let mut g = second.value.lock().await;
+            *g = "updated second";
+        }
 
-        assert_eq!(first_value, "updated first");
-        assert_eq!(second_value, "updated second");
-        assert_ne!(first_value, second_value);
+        let v1 = *first.value.lock().await;
+        let v2 = *second.value.lock().await;
+
+        assert_eq!(v1, "updated first");
+        assert_eq!(v2, "updated second");
+        assert_ne!(v1, v2);
+
+        // Перевірка, що це різні об'єкти в пам'яті
+        assert!(!Arc::ptr_eq(&first, &second));
     })
     .await;
 }

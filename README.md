@@ -27,7 +27,7 @@
 
 ```toml
 [dependencies]
-rust_di = { version = "" }
+rust_di = { version = "x.x.x" }
 ```
 
 ### 2. Register Services (in a way convenient for you)
@@ -55,7 +55,11 @@ pub struct Logger;
     Scoped(name = "console_logger"),
     Scoped(name = "email_logger", factory = EmailLoggerFactory),
 )]
-impl Logger {}
+impl Logger {
+    pub fn log(&self, msg: &str) { 
+        println!("{}", msg); 
+    }
+}
 
 ```
 
@@ -95,10 +99,10 @@ async fn main() {
         let di = rust_di::DIScope::current().unwrap();
 
         let logger = di.clone().get::<Logger>().await.unwrap();
-        logger.read().await.log("Hello!");
+        logger.log("Hello!");
 
         let file_logger = di.get_by_name::<Logger>("file").await.unwrap();
-        file_logger.read().await.log("Writing to file...");
+        file_logger.log("Writing to file...");
     }).await;
 }
 ```
@@ -120,7 +124,7 @@ Use `#[rust_di::main]` to simplify your async `fn main`. It ensures:
 async fn main() {
     let scope = rust_di::DIScope::current().unwrap();
     let logger = scope.get::<Logger>().await.unwrap();
-    logger.read().await.log("Started!");
+    logger.log("Started!");
 }
 ```
 
@@ -144,7 +148,7 @@ async fn main() {
 async fn consume_queue() {
     let di = DIScope::current().unwrap();
     let consumer = di.get::<Consumer>().await.unwrap();
-    consumer.read().await.run().await;
+    consumer.run().await;
 }
 ```
 
@@ -193,7 +197,7 @@ impl DiFactory for Processor {
     async fn create(scope: Arc<DIScope>) -> Result<Self, DiError> {
         let logger = scope.get::<Logger>().await?;
         Ok(Processor {
-            logger: logger.read().await.clone(),
+            logger: logger.clone(),
         })
     }
 }
@@ -232,7 +236,7 @@ async fn main() -> Result<(), DiError> {
     DIScope::run_with_scope(|| async {
         let di = DIScope::current().unwrap();
         let logger = di.get_by_name::<Logger>("file").await?;
-        logger.read().await.log("Manual registration works!");
+        logger.log("Manual registration works!");
         Ok(())
     }).await
 }
@@ -265,7 +269,7 @@ register_transient_name(name)    re-created per request
 
 ## 🔐 Safety Model
 
-* Services stored as `Arc<RwLock<T>>`
+* Services stored as `Arc<T>`
 * Global state managed via `OnceCell` & `ArcSwap`
 * Scope-local cache via `DashMap`
 * Panics on usage outside active DI scope
@@ -293,7 +297,7 @@ Supports:
 
 ### 🔒 Safety
 
-* All services are stored as `Arc<RwLock<T>>`
+* All services are stored as `Arc<T>`
 * Internally uses `DashMap`, `ArcSwap`, and `OnceCell`
 * `Task-local` isolation via `tokio::task_local!`
 
@@ -320,7 +324,7 @@ tokio::spawn( async {
     rust_di::DIScope::run_with_scope(|| async {
         let scope = di::DIScope::current().unwrap();
         let logger = scope.get::< Logger > ().await.unwrap();
-        logger.read().await.log("Inside spawned task");
+        logger.log("Inside spawned task");
     }).await;
 });
 ```

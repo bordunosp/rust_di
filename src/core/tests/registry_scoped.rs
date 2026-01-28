@@ -2,6 +2,7 @@ use crate::core::error_di::DiError;
 use crate::core::factory::DiFactory;
 use crate::{DIScope, initialize};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Default)]
 struct ScopedDefaultService {}
@@ -21,9 +22,16 @@ async fn test_scoped_default_registration() {
     .await;
 }
 
-#[derive(Default)]
 struct ScopedNamedService {
-    pub value: &'static str,
+    pub value: Mutex<&'static str>,
+}
+
+impl Default for ScopedNamedService {
+    fn default() -> Self {
+        ScopedNamedService {
+            value: Mutex::new("default"),
+        }
+    }
 }
 
 #[rust_di::registry(Scoped(name = "named"))]
@@ -41,20 +49,19 @@ async fn test_scoped_named_registration() {
                 .get_by_name::<ScopedNamedService>("named")
                 .await
                 .unwrap();
-            let mut srv = instance.write().await;
-            srv.value = "updated named";
+            // Тепер мутуємо через замок всередині сервісу
+            let mut guard = instance.value.lock().await;
+            *guard = "updated named";
         }
 
-        let value = scope
+        let instance = scope
             .clone()
             .get_by_name::<ScopedNamedService>("named")
             .await
-            .unwrap()
-            .read()
-            .await
-            .value;
+            .unwrap();
 
-        assert_eq!(value, "updated named");
+        let final_val = *instance.value.lock().await;
+        assert_eq!(final_val, "updated named");
     })
     .await;
 }
@@ -81,7 +88,7 @@ async fn test_scoped_factory_registration() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
         let instance = scope.get::<ScopedFactoryService>().await.unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "scoped factory");
     })
     .await;
@@ -109,15 +116,22 @@ async fn test_scoped_auto_factory_registration() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
         let instance = scope.get::<ScopedAutoFactoryService>().await.unwrap();
-        let value = instance.read().await.value;
+        let value = instance.value;
         assert_eq!(value, "auto scoped");
     })
     .await;
 }
 
-#[derive(Default)]
 struct ScopedIsolatedService {
-    pub value: &'static str,
+    pub value: Mutex<&'static str>,
+}
+
+impl Default for ScopedIsolatedService {
+    fn default() -> Self {
+        ScopedIsolatedService {
+            value: Mutex::new("default"),
+        }
+    }
 }
 
 #[rust_di::registry(Scoped)]
@@ -126,28 +140,39 @@ impl ScopedIsolatedService {}
 #[tokio::test]
 async fn test_scoped_returns_new_instance_for_each_scope() {
     initialize().await;
-    let mut values = Vec::new();
 
-    for v in &["a", "b"] {
-        DIScope::run_with_scope(|| async {
-            let scope = DIScope::current().unwrap();
-            let instance = scope.clone().get::<ScopedIsolatedService>().await.unwrap();
-            let mut srv = instance.write().await;
-            srv.value = v;
-            values.push(scope.clone().get::<ScopedIsolatedService>().await.unwrap());
-        })
-        .await;
-    }
+    // Перший скоуп
+    DIScope::run_with_scope(|| async {
+        let scope = DIScope::current().unwrap();
+        let instance = scope.get::<ScopedIsolatedService>().await.unwrap();
+        *instance.value.lock().await = "scope a";
+        // Тут ми не можемо винести Arc за межі scope (чере Drop DIScope),
+        // тому просто збережемо значення
+    })
+    .await;
 
-    let val_1 = values[0].read().await.value;
-    let val_2 = values[1].read().await.value;
+    // Другий скоуп
+    DIScope::run_with_scope(|| async {
+        let scope = DIScope::current().unwrap();
+        let instance = scope.get::<ScopedIsolatedService>().await.unwrap();
 
-    assert_ne!(val_1, val_2);
+        // Перевіряємо, що новий скоуп має дефолтне значення, а не "scope a"
+        let current_val = *instance.value.lock().await;
+        assert_eq!(current_val, "default");
+    })
+    .await;
 }
 
-#[derive(Default)]
 struct ScopedMultiNamedService {
-    pub value: &'static str,
+    pub value: Mutex<&'static str>,
+}
+
+impl Default for ScopedMultiNamedService {
+    fn default() -> Self {
+        ScopedMultiNamedService {
+            value: Mutex::new("default"),
+        }
+    }
 }
 
 #[rust_di::registry(Scoped(name = "first"))]
@@ -160,47 +185,23 @@ async fn test_scoped_multiple_named_instances_are_distinct() {
     DIScope::run_with_scope(|| async {
         let scope = DIScope::current().unwrap();
 
-        {
-            let first = scope
-                .clone()
-                .get_by_name::<ScopedMultiNamedService>("first")
-                .await
-                .unwrap();
-            let mut srv = first.write().await;
-            srv.value = "first scoped";
-        }
-
-        {
-            let second = scope
-                .clone()
-                .get_by_name::<ScopedMultiNamedService>("second")
-                .await
-                .unwrap();
-            let mut srv = second.write().await;
-            srv.value = "second scoped";
-        }
-
-        let first_val = scope
+        let first = scope
             .clone()
             .get_by_name::<ScopedMultiNamedService>("first")
             .await
-            .unwrap()
-            .read()
-            .await
-            .value;
+            .unwrap();
+        *first.value.lock().await = "first scoped";
 
-        let second_val = scope
+        let second = scope
             .clone()
             .get_by_name::<ScopedMultiNamedService>("second")
             .await
-            .unwrap()
-            .read()
-            .await
-            .value;
+            .unwrap();
+        *second.value.lock().await = "second scoped";
 
-        assert_eq!(first_val, "first scoped");
-        assert_eq!(second_val, "second scoped");
-        assert_ne!(first_val, second_val);
+        assert_eq!(*first.value.lock().await, "first scoped");
+        assert_eq!(*second.value.lock().await, "second scoped");
+        assert!(!Arc::ptr_eq(&first, &second));
     })
     .await;
 }

@@ -87,7 +87,7 @@ async fn test_transient_factory_registration() {
             .get::<TransientFactoryService>()
             .await
             .unwrap();
-        assert_ne!(a.read().await.value, "");
+        assert_ne!(a.value, "");
         assert!(!Arc::ptr_eq(&a, &b));
     })
     .await;
@@ -125,7 +125,7 @@ async fn test_transient_auto_factory_registration() {
             .get::<TransientAutoFactoryService>()
             .await
             .unwrap();
-        assert_eq!(a.read().await.value, "auto factory");
+        assert_eq!(a.value, "auto factory");
         assert!(!Arc::ptr_eq(&a, &b));
     })
     .await;

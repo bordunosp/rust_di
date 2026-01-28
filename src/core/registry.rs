@@ -3,9 +3,10 @@ use crate::core::contracts::{RegisteredInstances, ServiceInstance};
 use crate::core::error_di::DiError;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use rust_di::core::contracts::AnyService;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{OnceCell, RwLock as TokioRwLock};
+use tokio::sync::OnceCell;
 
 pub(crate) static REGISTERED_SINGLETON_FACTORIES: RegisteredInstances = OnceCell::const_new();
 pub(crate) static REGISTERED_TRANSIENT_FACTORIES: RegisteredInstances = OnceCell::const_new();
@@ -44,7 +45,8 @@ where
                 let factory_cloned = arc_factory.clone();
                 Box::pin(async move {
                     let service = factory_cloned(scope).await?;
-                    Ok(Arc::new(TokioRwLock::new(service)) as ServiceInstance)
+                    let arc_any: Arc<dyn AnyService + Send + Sync + 'static> = Arc::new(service);
+                    Ok(arc_any as ServiceInstance)
                 })
                     as Pin<Box<dyn Future<Output = Result<ServiceInstance, DiError>> + Send>>
             });
@@ -137,7 +139,7 @@ mod tests {
         DIScope::run_with_scope(|| async {
             let scope = DIScope::current().unwrap();
             let resolved = scope.get::<UniqueSingletonService>().await.unwrap();
-            let guard = resolved.read().await;
+            let guard = resolved;
             let ptr = &*guard as *const UniqueSingletonService;
             assert!(!ptr.is_null());
         })
@@ -192,8 +194,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let a_id = a.read().await.0;
-            let b_id = b.read().await.0;
+            let a_id = a.0;
+            let b_id = b.0;
 
             assert_ne!(a_id, b_id);
         })
@@ -221,8 +223,8 @@ mod tests {
             let a = scope.clone().get::<ScopedCounterService>().await.unwrap();
             let b = scope.clone().get::<ScopedCounterService>().await.unwrap();
 
-            let a_id = a.read().await.0;
-            let b_id = b.read().await.0;
+            let a_id = a.0;
+            let b_id = b.0;
 
             assert_eq!(a_id, b_id);
         })
@@ -261,8 +263,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(alpha.read().await.0, "alpha");
-            assert_eq!(beta.read().await.0, "beta");
+            assert_eq!(alpha.0, "alpha");
+            assert_eq!(beta.0, "beta");
         })
         .await;
     }

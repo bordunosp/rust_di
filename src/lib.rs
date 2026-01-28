@@ -7,7 +7,7 @@ pub use inventory;
 
 inventory::collect!(DiConstructor);
 
-use crate::core::contracts::{AnyService, ScopedMap, ServiceInstance};
+use crate::core::contracts::{ScopedMap, ServiceInstance};
 use crate::core::di_inventory::DiConstructor;
 use crate::core::error_di::DiError;
 use crate::core::registry::{
@@ -16,7 +16,6 @@ use crate::core::registry::{
 };
 use dashmap::DashMap;
 use std::{cell::RefCell, fmt, future::Future, sync::Arc};
-use tokio::sync::RwLock as TokioRwLock;
 
 pub use di_macros::main;
 /// Attribute macro for registering services.
@@ -121,14 +120,14 @@ impl DIScope {
             .await
     }
 
-    pub async fn get<T>(self: Arc<Self>) -> Result<Arc<TokioRwLock<T>>, DiError>
+    pub async fn get<T>(self: Arc<Self>) -> Result<Arc<T>, DiError>
     where
         T: Send + Sync + 'static,
     {
         self.get_by_name::<T>("").await
     }
 
-    pub async fn get_by_name<T>(self: Arc<Self>, name: &str) -> Result<Arc<TokioRwLock<T>>, DiError>
+    pub async fn get_by_name<T>(self: Arc<Self>, name: &str) -> Result<Arc<T>, DiError>
     where
         T: Send + Sync + 'static,
     {
@@ -158,37 +157,37 @@ impl DIScope {
                 if let Some(entry) = self.scoped_instances.get(&key) {
                     return Ok(entry.value().clone());
                 }
-                if let Some(factories) = REGISTERED_SCOPE_FACTORIES.get() {
-                    if let Some(factory) = factories.load().get(&key) {
-                        let instance = factory.value()(self.clone()).await?;
-                        self.scoped_instances.insert(key.clone(), instance.clone());
-                        return Ok(instance);
-                    }
+                if let Some(factories) = REGISTERED_SCOPE_FACTORIES.get()
+                    && let Some(factory) = factories.load().get(&key)
+                {
+                    let instance = factory.value()(self.clone()).await?;
+                    self.scoped_instances.insert(key.clone(), instance.clone());
+                    return Ok(instance);
                 }
             }
 
             // 🔁 Singleton (глобальний кеш)
             {
-                if let Some(factories) = REGISTERED_SINGLETON_FACTORIES.get() {
-                    if let Some(factory) = factories.load().get(&key) {
-                        let cache = SINGLETON_CACHE.get_or_init(DashMap::new);
-                        if let Some(cached) = cache.get(&key) {
-                            return Ok(cached.value().clone());
-                        }
-                        let instance = factory.value()(self.clone()).await?;
-                        cache.insert(key.clone(), instance.clone());
-                        return Ok(instance);
+                if let Some(factories) = REGISTERED_SINGLETON_FACTORIES.get()
+                    && let Some(factory) = factories.load().get(&key)
+                {
+                    let cache = SINGLETON_CACHE.get_or_init(DashMap::new);
+                    if let Some(cached) = cache.get(&key) {
+                        return Ok(cached.value().clone());
                     }
+                    let instance = factory.value()(self.clone()).await?;
+                    cache.insert(key.clone(), instance.clone());
+                    return Ok(instance);
                 }
             }
 
             // 🔁 Transient (новий кожного разу)
             {
-                if let Some(factories) = REGISTERED_TRANSIENT_FACTORIES.get() {
-                    if let Some(factory) = factories.load().get(&key) {
-                        let instance = factory.value()(self.clone()).await?;
-                        return Ok(instance);
-                    }
+                if let Some(factories) = REGISTERED_TRANSIENT_FACTORIES.get()
+                    && let Some(factory) = factories.load().get(&key)
+                {
+                    let instance = factory.value()(self.clone()).await?;
+                    return Ok(instance);
                 }
             }
 
@@ -208,12 +207,15 @@ impl DIScope {
                 ))))
             })??;
 
-        // Приведення типу
-        result.map(|instance| {
-            let raw_ptr: *const TokioRwLock<dyn AnyService + Send + Sync + 'static> =
-                Arc::into_raw(instance);
-            let typed_raw_ptr: *const TokioRwLock<T> = raw_ptr.cast();
-            unsafe { Arc::from_raw(typed_raw_ptr) }
+        result.and_then(|instance| {
+            let any_instance: Arc<dyn std::any::Any + Send + Sync> = instance;
+
+            any_instance.downcast::<T>().map_err(|_| {
+                DiError::FactoryError(Box::new(std::io::Error::other(format!(
+                    "Type mismatch: could not downcast to {}",
+                    std::any::type_name::<T>()
+                ))))
+            })
         })
     }
 }
@@ -297,14 +299,14 @@ mod tests {
             let scope = DIScope::current().unwrap();
             let a = scope.clone().get::<ScopedService>().await.unwrap();
             let b = scope.clone().get::<ScopedService>().await.unwrap();
-            assert_eq!(a.read().await.0, b.read().await.0);
+            assert_eq!(a.0, b.0);
         })
         .await;
 
         DIScope::run_with_scope(|| async {
             let scope = DIScope::current().unwrap();
             let c = scope.get::<ScopedService>().await.unwrap();
-            assert_ne!(c.read().await.0, 0);
+            assert_ne!(c.0, 0);
         })
         .await;
     }
@@ -328,7 +330,7 @@ mod tests {
             let scope = DIScope::current().unwrap();
             let a = scope.clone().get::<TransientService>().await.unwrap();
             let b = scope.clone().get::<TransientService>().await.unwrap();
-            assert_ne!(a.read().await.0, b.read().await.0);
+            assert_ne!(a.0, b.0);
         })
         .await;
     }
@@ -364,8 +366,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(alpha.read().await.0, "alpha");
-            assert_eq!(beta.read().await.0, "beta");
+            assert_eq!(alpha.0, "alpha");
+            assert_eq!(beta.0, "beta");
         })
         .await;
     }
