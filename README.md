@@ -27,7 +27,7 @@
 
 ```toml
 [dependencies]
-rust_di = { version = "x.x.x" }
+rust_di = { version = "3.1.0" }
 ```
 
 ### 2. Register Services (in a way convenient for you)

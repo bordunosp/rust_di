@@ -7,9 +7,11 @@ pub use inventory;
 
 inventory::collect!(DiConstructor);
 
+pub use crate::core::error_di::DiError;
+pub use crate::core::factory::DiFactory;
+
 use crate::core::contracts::{ScopedMap, ServiceInstance};
 use crate::core::di_inventory::DiConstructor;
-use crate::core::error_di::DiError;
 use crate::core::registry::{
     REGISTERED_SCOPE_FACTORIES, REGISTERED_SINGLETON_FACTORIES, REGISTERED_TRANSIENT_FACTORIES,
     SINGLETON_CACHE,
